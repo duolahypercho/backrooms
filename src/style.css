@@ -529,7 +529,7 @@ button {
 #coop-lobby.is-waiting {
   width: min(92vw, 520px);
   border-color: rgba(184, 189, 134, 0.34);
-  background: rgba(9, 10, 7, 0.9);
+  background: rgba(9, 10, 7, 0.08);
 }
 
 #coop-lobby.is-waiting .coop-mode-tabs,
@@ -549,6 +549,7 @@ button {
   justify-content: space-between;
   padding: 0 11px;
   border-bottom: 1px solid rgba(232, 228, 202, 0.13);
+  background: rgba(9, 10, 7, 0.88);
   color: rgba(232, 228, 202, 0.55);
   font-size: 7px;
   letter-spacing: 0.16em;
@@ -648,6 +649,7 @@ button {
   gap: 7px;
   padding: 9px 10px 10px;
   border-top: 1px solid rgba(232, 228, 202, 0.12);
+  background: rgba(9, 10, 7, 0.88);
 }
 
 #look-picker > span {
@@ -712,6 +714,7 @@ button {
   margin: 0;
   padding: 9px 10px;
   border-top: 1px solid rgba(232, 228, 202, 0.1);
+  background: rgba(9, 10, 7, 0.88);
   color: rgba(232, 228, 202, 0.4);
   font-size: 6px;
   letter-spacing: 0.11em;
@@ -910,6 +913,10 @@ button {
   color: rgba(232, 228, 202, 0.46);
   font-size: 7px;
   letter-spacing: 0.13em;
+}
+
+#coop-lobby.is-waiting #coop-feedback {
+  background: rgba(9, 10, 7, 0.88);
 }
 
 #coop-lobby.is-connected #coop-state {
