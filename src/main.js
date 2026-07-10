@@ -73,6 +73,11 @@ const dom = {
   voiceToggle: document.querySelector('#voice-toggle'),
   micToggle: document.querySelector('#mic-toggle'),
   voiceState: document.querySelector('#voice-state'),
+  chatPanel: document.querySelector('#chat-panel'),
+  chatLog: document.querySelector('#chat-log'),
+  chatToggle: document.querySelector('#chat-toggle'),
+  chatForm: document.querySelector('#chat-form'),
+  chatInput: document.querySelector('#chat-input'),
   coopLobby: document.querySelector('#coop-lobby'),
   modeSolo: document.querySelector('#mode-solo'),
   modeHost: document.querySelector('#mode-host'),
@@ -1499,6 +1504,12 @@ async function init() {
   if (startDirection) {
     camera.rotation.y = Math.atan2(-startDirection.dc, -startDirection.dr);
   }
+  const landingSpawnYaw = camera.rotation.y;
+  const landingSpawnX = camera.position.x;
+  const landingSpawnZ = camera.position.z;
+  let landingElapsed = 0;
+  let landingAudioArmed = false;
+  let overlayDismissTimer = 0;
   scene.add(camera);
 
   const renderer = new THREE.WebGLRenderer({
@@ -2111,6 +2122,13 @@ async function init() {
     reducedMotion,
   });
   let lastVoiceErrorAt = 0;
+  let voicePreferredEnabled = false;
+  let voicePreferredMuted = false;
+  let chatMessages = [];
+  let chatComposing = false;
+  let chatResumeLock = false;
+  let chatSendBusy = false;
+  const CHAT_LOG_LIMIT = 8;
   const multiplayer = createMultiplayerClient({
     url: query.get('server') || undefined,
     autoReconnect: true,
@@ -2121,11 +2139,19 @@ async function init() {
     iceServers: import.meta.env.VITE_VOICE_ICE_SERVERS || [],
     sendSignal: (playerId, signal) => multiplayer.sendVoiceSignal(playerId, signal),
     onStateChange: (state) => updateVoiceUi(state),
-    onError: () => {
+    onError: (error) => {
       const timestamp = performance.now();
-      if (multiplayerActive && timestamp - lastVoiceErrorAt > 2_500) {
-        lastVoiceErrorAt = timestamp;
-        showMessage('VOICE SIGNAL DEGRADED', 0.65);
+      if (!multiplayerActive || timestamp - lastVoiceErrorAt <= 2_500) return;
+      lastVoiceErrorAt = timestamp;
+      const code = error?.code || error?.name || '';
+      const message = code === 'VOICE_ICE_FAILED'
+        ? 'VOICE LINK FAILED / CHECK NETWORK'
+        : code === 'VOICE_SIGNAL_RATE_LIMITED'
+          ? 'VOICE SIGNAL RATE LIMITED'
+          : 'VOICE SIGNAL DEGRADED';
+      showMessage(message, 0.75);
+      if (dom.voiceState && code === 'VOICE_ICE_FAILED') {
+        dom.voiceState.textContent = 'Voice peer link failed. Both players need Voice On; public networks may need TURN.';
       }
     },
   });
@@ -2290,8 +2316,12 @@ async function init() {
 
   function showOverlay(kind) {
     cancelHeldInteraction();
+    clearTimeout(overlayDismissTimer);
+    dom.overlay.classList.remove('is-dismissing');
     dom.overlay.classList.add('is-visible');
     dom.overlay.dataset.mode = kind;
+    if (kind === 'start') dom.game.dataset.landing = 'true';
+    else delete dom.game.dataset.landing;
     if (kind === 'pause') {
       dom.overlayKicker.textContent = level.copy.pause.kicker;
       dom.overlayTitle.innerHTML = level.copy.pause.title;
@@ -2312,8 +2342,17 @@ async function init() {
   }
 
   function hideOverlay() {
-    dom.overlay.classList.remove('is-visible');
-    if (mobile) dom.touchUi.classList.add('is-visible');
+    if (!dom.overlay.classList.contains('is-visible')) {
+      if (mobile) dom.touchUi.classList.add('is-visible');
+      return;
+    }
+    if (dom.overlay.classList.contains('is-dismissing')) return;
+    dom.overlay.classList.add('is-dismissing');
+    clearTimeout(overlayDismissTimer);
+    overlayDismissTimer = setTimeout(() => {
+      dom.overlay.classList.remove('is-visible', 'is-dismissing');
+      if (mobile) dom.touchUi.classList.add('is-visible');
+    }, reducedMotion ? 120 : 820);
   }
 
   function showMessage(text, duration = 1.1) {
@@ -2397,6 +2436,123 @@ async function init() {
     if (!room || !multiplayer.self?.id) return;
     voiceChat.bindSession({ selfId: multiplayer.self.id, players: room.players || [] });
     updateVoiceUi();
+  }
+
+  function chatAvailable() {
+    return multiplayer.serverCapabilities.includes('text-chat-v1');
+  }
+
+  function clearChatLog() {
+    chatMessages = [];
+    if (dom.chatLog) dom.chatLog.replaceChildren();
+  }
+
+  function renderChatLog() {
+    if (!dom.chatLog) return;
+    dom.chatLog.replaceChildren();
+    for (const entry of chatMessages) {
+      const line = document.createElement('p');
+      const name = document.createElement('b');
+      name.textContent = entry.fromName || 'UNKNOWN';
+      line.append(name, document.createTextNode(entry.text || ''));
+      dom.chatLog.append(line);
+    }
+  }
+
+  function appendChatMessage(payload = {}) {
+    const text = String(payload.text || '').trim();
+    if (!text) return;
+    chatMessages.push({
+      fromPlayerId: String(payload.fromPlayerId || ''),
+      fromName: String(payload.fromName || 'UNKNOWN').slice(0, 24),
+      text: text.slice(0, 120),
+      sentAt: Number(payload.sentAt) || Date.now(),
+    });
+    if (chatMessages.length > CHAT_LOG_LIMIT) chatMessages = chatMessages.slice(-CHAT_LOG_LIMIT);
+    renderChatLog();
+  }
+
+  function setChatComposing(open) {
+    if (!dom.chatPanel || !dom.chatInput) return;
+    const next = Boolean(open) && multiplayerActive && chatAvailable();
+    if (next === chatComposing) {
+      if (next) dom.chatInput.focus();
+      return;
+    }
+    chatComposing = next;
+    dom.chatPanel.classList.toggle('is-composing', chatComposing);
+    if (dom.chatToggle) {
+      dom.chatToggle.setAttribute('aria-expanded', String(chatComposing));
+      dom.chatToggle.setAttribute('aria-label', chatComposing ? 'Close room text chat' : 'Open room text chat');
+      dom.chatToggle.textContent = chatComposing ? 'CLOSE' : 'CHAT';
+    }
+    if (chatComposing) {
+      keys.clear();
+      touchInput.set(0, 0);
+      touchSprint = false;
+      playerActualSpeed = 0;
+      playerRunning = false;
+      cancelHeldInteraction();
+      if (!mobile && controls.isLocked) {
+        chatResumeLock = true;
+        controls.unlock();
+      }
+      dom.chatInput.focus();
+      dom.chatInput.select?.();
+    } else {
+      dom.chatInput.blur();
+      dom.chatInput.value = '';
+      if (chatResumeLock && !mobile && gameState === 'playing' && !ending) {
+        chatResumeLock = false;
+        queueMicrotask(() => {
+          if (gameState === 'playing' && !controls.isLocked) controls.lock();
+        });
+      } else {
+        chatResumeLock = false;
+      }
+    }
+  }
+
+  async function submitChatMessage(rawText) {
+    if (!multiplayerActive || !chatAvailable() || chatSendBusy) return false;
+    const text = String(rawText || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120);
+    if (!text) {
+      setChatComposing(false);
+      return false;
+    }
+    chatSendBusy = true;
+    try {
+      await multiplayer.sendChat(text);
+      setChatComposing(false);
+      return true;
+    } catch (error) {
+      const code = error?.code || '';
+      showMessage(
+        code === 'CHAT_RATE_LIMITED'
+          ? 'CHAT RATE LIMITED'
+          : code === 'INVALID_CHAT'
+            ? 'EMPTY SIGNAL'
+            : 'CHAT FAILED',
+        0.7,
+      );
+      return false;
+    } finally {
+      chatSendBusy = false;
+    }
+  }
+
+  async function restoreVoiceIfPreferred() {
+    if (!voicePreferredEnabled || !multiplayerActive || !voiceAvailable()) return;
+    if (voiceChat.enabled || voiceChat.state === 'requesting') return;
+    bindVoiceSession();
+    try {
+      await voiceChat.enable({
+        muted: voicePreferredMuted,
+        paused: document.hidden,
+      });
+    } catch {
+      // Keep preferred flag so the player can retry from the HUD.
+    }
   }
 
   function setLobbyBusy(busy) {
@@ -2687,6 +2843,8 @@ async function init() {
     const visible = multiplayerActive && gameState === 'start';
     dom.coopLobby.classList.toggle('is-waiting', visible);
     dom.overlay.classList.toggle('has-waiting-room', visible);
+    const channel = dom.overlay.querySelector('.overlay-channel');
+    if (visible && channel) channel.open = true;
     dom.waitingRoom.hidden = !visible;
     waitingRoomPreview.setVisible(visible);
     if (visible) dom.game.dataset.waitingRoom = 'true';
@@ -2729,6 +2887,12 @@ async function init() {
       waitingRoomPreview.setVisible(false);
       dom.coopHud.classList.remove('is-visible');
       dom.voiceControls.hidden = true;
+      if (dom.chatPanel) {
+        setChatComposing(false);
+        clearChatLog();
+        dom.chatPanel.hidden = true;
+        dom.chatPanel.classList.remove('is-visible');
+      }
       dom.coopLobby.classList.remove('is-waiting');
       dom.overlay.classList.remove('has-waiting-room');
       dom.waitingRoom.hidden = true;
@@ -2746,6 +2910,12 @@ async function init() {
     dom.coopRoster.textContent = `${count}/${capacity} ${count === 1 ? 'SURVIVOR' : 'SURVIVORS'}`;
     dom.coopHud.classList.add('is-visible');
     dom.voiceControls.hidden = false;
+    if (dom.chatPanel) {
+      const available = chatAvailable();
+      dom.chatPanel.hidden = !available;
+      dom.chatPanel.classList.toggle('is-visible', available);
+      if (!available) setChatComposing(false);
+    }
     bindVoiceSession();
     dom.game.dataset.multiplayer = 'active';
     dom.game.dataset.room = multiplayer.roomCode;
@@ -2990,6 +3160,10 @@ async function init() {
 
   async function leaveMultiplayer() {
     const previousCode = multiplayer.roomCode;
+    voicePreferredEnabled = false;
+    voicePreferredMuted = false;
+    setChatComposing(false);
+    clearChatLog();
     voiceChat.disable();
     try {
       if (multiplayer.roomCode && multiplayer.isConnected) await multiplayer.leaveRoom();
@@ -4802,9 +4976,15 @@ async function init() {
   }
 
   function beginPlay() {
+    const enteringFromLanding = gameState === 'start';
     ending = false;
     localAlive = true;
     gameState = 'playing';
+    if (enteringFromLanding) {
+      camera.rotation.y = landingSpawnYaw;
+      camera.position.set(playerPosition.x, EYE_HEIGHT, playerPosition.y);
+      delete dom.game.dataset.landing;
+    }
     waitingRoomPreview.dispose();
     hideOverlay();
     audio.resume();
@@ -4812,6 +4992,25 @@ async function init() {
     clock.getDelta();
     dom.game.dataset.gameState = gameState;
     sendLocalPlayerState(true);
+  }
+
+  function armLandingAudio() {
+    if (landingAudioArmed) return;
+    landingAudioArmed = true;
+    audio.start().catch(() => {});
+  }
+
+  function updateLanding(rawDelta) {
+    if (gameState !== 'start' || dom.game.dataset.waitingRoom === 'true') return;
+    landingElapsed += rawDelta;
+    if (reducedMotion) return;
+    const t = landingElapsed;
+    camera.rotation.y = landingSpawnYaw
+      + Math.sin(t * 0.21) * 0.042
+      + Math.sin(t * 0.07) * 0.018;
+    camera.position.x = landingSpawnX + Math.sin(t * 0.14) * 0.035;
+    camera.position.z = landingSpawnZ + Math.cos(t * 0.11) * 0.028;
+    if (Math.floor(t * 2) !== Math.floor((t - rawDelta) * 2)) updateLights();
   }
 
   function sendLocalPlayerState(force = false) {
@@ -4862,6 +5061,10 @@ async function init() {
   multiplayer.on('status', ({ status }) => {
     if (status === 'reconnecting' || status === 'resuming') {
       if (multiplayerActive || multiplayer.roomCode) {
+        if (voiceChat.enabled) {
+          voicePreferredEnabled = true;
+          voicePreferredMuted = voiceChat.muted;
+        }
         voiceChat.disable({ announce: false });
         setLobbyStatus('SIGNAL LOST / RECONNECTING');
         dom.status.textContent = 'CO-OP LINK UNSTABLE';
@@ -4870,12 +5073,15 @@ async function init() {
         setDirectoryState('loading', 'RECONNECTING TO ROOM DIRECTORY');
       }
     } else if (status === 'replaced') {
+      voicePreferredEnabled = false;
+      voicePreferredMuted = false;
       voiceChat.disable({ announce: false });
       multiplayerActive = false;
       setLobbyStatus('ROOM OPEN IN ANOTHER TAB', 'error');
       updateRoomHud();
     } else if (status === 'joined' && multiplayer.roomCode) {
       setLobbyStatus(`ROOM ${multiplayer.roomCode} / LINKED`, 'connected');
+      restoreVoiceIfPreferred();
     }
   });
 
@@ -4898,6 +5104,8 @@ async function init() {
     if (code) sessionStorage.removeItem(roomResumeKey(code));
     multiplayerActive = false;
     roomSpawnApplied = false;
+    voicePreferredEnabled = false;
+    voicePreferredMuted = false;
     voiceChat.disable({ announce: false });
     remoteNetworkPlayers.clear();
     remotePlayers.clear();
@@ -5095,11 +5303,15 @@ async function init() {
     if (!isCurrentRoomEvent(payload)) return;
     voiceChat.handleSignal(payload);
   });
+  multiplayer.on('room:chat', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    appendChatMessage(payload);
+  });
   multiplayer.on('room:directory:updated', (directory) => {
     if (lobbyMode === 'rooms') renderRoomDirectory(directory);
   });
   multiplayer.on('protocol:error', (error) => {
-    if (String(error?.code || '').startsWith('VOICE_') || error?.code === 'INVALID_VOICE_SIGNAL') return;
+    if (String(error?.code || '').startsWith('VOICE_') || error?.code === 'INVALID_VOICE_SIGNAL' || error?.code === 'CHAT_RATE_LIMITED' || error?.code === 'INVALID_CHAT') return;
     if (multiplayerActive) showMessage('ROOM SIGNAL ERROR', 0.65);
     else {
       if (lobbyMode === 'rooms') {
@@ -5222,6 +5434,7 @@ async function init() {
     keys.clear();
     velocity.multiplyScalar(0.25);
     if (ending || gameState === 'dead' || gameState === 'won') return;
+    if (chatComposing) return;
     if (gameState === 'playing') {
       gameState = 'paused';
       dom.game.dataset.gameState = gameState;
@@ -5231,6 +5444,7 @@ async function init() {
     }
   });
 
+  dom.overlay.addEventListener('pointerdown', armLandingAudio, { passive: true });
   dom.enterButton.addEventListener('click', () => {
     if (gameState === 'dead') {
       window.location.reload();
@@ -5297,11 +5511,15 @@ async function init() {
 
   dom.voiceToggle.addEventListener('click', async () => {
     if (voiceChat.state === 'requesting') {
+      voicePreferredEnabled = false;
+      voicePreferredMuted = false;
       voiceChat.disable();
       showMessage('MICROPHONE REQUEST CANCELED', 0.7);
       return;
     }
     if (voiceChat.enabled) {
+      voicePreferredEnabled = false;
+      voicePreferredMuted = false;
       voiceChat.disable();
       showMessage('VOICE OFF / MICROPHONE RELEASED', 0.75);
       return;
@@ -5317,27 +5535,66 @@ async function init() {
     }
     bindVoiceSession();
     try {
-      await voiceChat.enable();
-      if (voiceChat.enabled) showMessage('VOICE LINKED / MICROPHONE LIVE', 0.8);
+      await voiceChat.enable({
+        muted: voicePreferredEnabled && voicePreferredMuted,
+        paused: document.hidden,
+      });
+      if (voiceChat.enabled) {
+        voicePreferredEnabled = true;
+        voicePreferredMuted = voiceChat.muted;
+        showMessage('VOICE LINKED / BOTH PLAYERS NEED VOICE ON', 0.95);
+      }
     } catch (error) {
+      voicePreferredEnabled = false;
+      voicePreferredMuted = false;
       const message = error?.name === 'NotAllowedError'
         ? 'MICROPHONE PERMISSION BLOCKED'
         : error?.name === 'NotFoundError'
           ? 'NO MICROPHONE FOUND'
           : error?.name === 'SecurityError'
             ? 'HTTPS REQUIRED FOR VOICE'
-            : 'VOICE START FAILED';
+            : error?.code === 'VOICE_UNSUPPORTED'
+              ? 'VOICE NOT SUPPORTED'
+              : 'VOICE START FAILED';
       showMessage(message, 1);
+      if (dom.voiceState && error?.name === 'NotAllowedError') {
+        dom.voiceState.textContent = 'Microphone access was blocked. Allow the mic in browser settings, then activate Voice Retry.';
+      }
     }
   });
 
   dom.micToggle.addEventListener('click', () => {
     if (!voiceChat.enabled) return;
     const muted = voiceChat.setMuted(!voiceChat.muted);
+    voicePreferredMuted = muted;
     showMessage(muted ? 'MICROPHONE MUTED' : 'MICROPHONE LIVE', 0.55);
   });
 
+  dom.chatToggle?.addEventListener('click', () => {
+    setChatComposing(!chatComposing);
+  });
+
+  dom.chatForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitChatMessage(dom.chatInput?.value || '');
+  });
+
   window.addEventListener('keydown', (event) => {
+    const typingTarget = event.target instanceof HTMLElement
+      && (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable);
+    if (event.code === 'Escape' && chatComposing) {
+      event.preventDefault();
+      setChatComposing(false);
+      return;
+    }
+    if (event.code === 'Enter' && multiplayerActive && chatAvailable() && !typingTarget && !event.repeat) {
+      if (!chatComposing && (gameState === 'playing' || gameState === 'paused' || dom.overlay.classList.contains('is-visible'))) {
+        event.preventDefault();
+        setChatComposing(true);
+        return;
+      }
+    }
+    if (typingTarget) return;
     keys.add(event.code);
     if (event.repeat) return;
     if (event.code === 'KeyE') beginInteraction();
@@ -5502,6 +5759,8 @@ async function init() {
     requestAnimationFrame(animate);
     const rawDelta = Math.min((now - lastFrame) / 1000, 0.05);
     lastFrame = now;
+
+    if (gameState === 'start') updateLanding(rawDelta);
 
     if (gameState === 'playing') {
       elapsed += rawDelta;

@@ -12,6 +12,7 @@
  * - room:directory:list { limit? }
  * - room:directory:subscribe { enabled?, limit? }
  * - voice:signal { epoch, targetPlayerId, signal }
+ * - room:chat { epoch, text }
  * - player:state { sequence, state }
  * - objective:intent { objectiveId, action, state } (any player; delivered to host)
  * - objective:event { objectiveId, action, state } (host authoritative)
@@ -24,6 +25,7 @@
  * - room:joined { room, self, resumed }, room:left, room:snapshot
  * - room:directory, room:directory:subscription, room:directory:changed
  * - voice:signal { epoch, fromPlayerId, signal }
+ * - room:chat { epoch, fromPlayerId, fromName, text, sentAt }
  * - player:joined, player:left, player:removed, player:state
  * - host:changed
  * - objective:intent, objective:event, monster:event, game:event, world:synced
@@ -57,6 +59,9 @@ const VOICE_SIGNAL_RATE_BURST = 64;
 const VOICE_SIGNAL_RATE_REFILL_PER_SECOND = 32;
 const GAMEPLAY_INTENT_RATE_BURST = 12;
 const GAMEPLAY_INTENT_RATE_REFILL_PER_SECOND = 6;
+const CHAT_RATE_BURST = 3;
+const CHAT_RATE_REFILL_PER_SECOND = 1;
+const CHAT_MAX_LENGTH = 120;
 const VOICE_SDP_MAX_LENGTH = 32 * 1024;
 const VOICE_CANDIDATE_MAX_LENGTH = 2 * 1024;
 const VOICE_CANDIDATE_FIELD_MAX_LENGTH = 256;
@@ -105,6 +110,11 @@ function normalizeVoiceTarget(value) {
   const target = value.trim();
   if (!target || target.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(target)) return '';
   return target;
+}
+
+function normalizeChatText(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, CHAT_MAX_LENGTH);
 }
 
 function normalizeVoiceSignal(value) {
@@ -369,6 +379,12 @@ export function createMultiplayerServer(options = {}) {
       1,
       60,
     ),
+    chatRateBurst: clamp(finiteInteger(options.chatRateBurst, CHAT_RATE_BURST), 1, 20),
+    chatRatePerSecond: clamp(
+      finiteInteger(options.chatRatePerSecond, CHAT_RATE_REFILL_PER_SECOND),
+      1,
+      10,
+    ),
   };
 
   const rooms = new Map();
@@ -525,6 +541,33 @@ export function createMultiplayerServer(options = {}) {
       return false;
     }
     context.gameplayIntentRateTokens -= 1;
+    return true;
+  }
+
+  function takeChatRateToken(socket, request) {
+    const context = contexts.get(socket);
+    const timestamp = now();
+    const elapsedSeconds = Math.max(0, timestamp - context.chatRateUpdatedAt) / 1_000;
+    context.chatRateTokens = Math.min(
+      config.chatRateBurst,
+      context.chatRateTokens + elapsedSeconds * config.chatRatePerSecond,
+    );
+    context.chatRateUpdatedAt = timestamp;
+    if (context.chatRateTokens < 1) {
+      const retryAfterMs = Math.ceil(
+        ((1 - context.chatRateTokens) / config.chatRatePerSecond) * 1_000,
+      );
+      sendError(
+        socket,
+        request,
+        'CHAT_RATE_LIMITED',
+        'Room chat is temporarily rate limited.',
+        true,
+        { retryAfterMs },
+      );
+      return false;
+    }
+    context.chatRateTokens -= 1;
     return true;
   }
 
@@ -904,6 +947,32 @@ export function createMultiplayerServer(options = {}) {
     });
   }
 
+  function relayRoomChat(socket, request) {
+    const context = requireRoom(socket, request);
+    if (!context) return;
+    if (!requireCurrentEpoch(socket, request, context)) return;
+
+    const text = normalizeChatText(request.payload?.text);
+    if (!text) {
+      sendError(socket, request, 'INVALID_CHAT', 'Chat messages must contain printable text.');
+      return;
+    }
+    if (!takeChatRateToken(socket, request)) return;
+
+    const event = {
+      epoch: context.room.epoch,
+      fromPlayerId: context.player.id,
+      fromName: context.player.name,
+      text,
+      sentAt: now(),
+    };
+    broadcast(context.room, { type: 'room:chat', payload: event });
+    reply(socket, request, 'room:chat:ack', {
+      delivered: true,
+      sentAt: event.sentAt,
+    });
+  }
+
   function relayObjectiveEvent(socket, request) {
     const context = requireHost(socket, request);
     if (!context) return;
@@ -1076,6 +1145,9 @@ export function createMultiplayerServer(options = {}) {
       case 'voice:signal':
         relayVoiceSignal(socket, request);
         break;
+      case 'room:chat':
+        relayRoomChat(socket, request);
+        break;
       case 'objective:intent':
         relayObjectiveIntent(socket, request);
         break;
@@ -1137,6 +1209,8 @@ export function createMultiplayerServer(options = {}) {
       voiceSignalRateUpdatedAt: now(),
       gameplayIntentRateTokens: config.gameplayIntentRateBurst,
       gameplayIntentRateUpdatedAt: now(),
+      chatRateTokens: config.chatRateBurst,
+      chatRateUpdatedAt: now(),
     });
     socket.on('pong', () => {
       const context = contexts.get(socket);
@@ -1152,7 +1226,7 @@ export function createMultiplayerServer(options = {}) {
         heartbeatMs: config.heartbeatMs,
         reconnectGraceMs: config.reconnectGraceMs,
         maxPlayers: config.maxPlayers,
-        capabilities: ['room-directory', 'voice-signaling', 'survival-v1', 'waiting-room-v1'],
+        capabilities: ['room-directory', 'voice-signaling', 'text-chat-v1', 'survival-v1', 'waiting-room-v1'],
         directoryMaxResults: config.directoryMaxResults,
         levelIds: config.levelIds,
         contentFingerprint: config.contentFingerprint,

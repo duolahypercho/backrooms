@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { VoiceChat, parseVoiceIceServers } from './voice-chat.js';
+import { VoiceChat, parseVoiceIceServers, resolveVoiceIceServers, DEFAULT_VOICE_ICE_SERVERS } from './voice-chat.js';
 
 class FakeTrack {
   constructor() {
@@ -81,6 +81,49 @@ test('ICE server parsing accepts configured STUN/TURN and rejects other URLs', (
   assert.deepEqual(parseVoiceIceServers('https://example.test,stun:valid.test'), [
     { urls: 'stun:valid.test' },
   ]);
+});
+
+test('empty ICE config falls back to public STUN defaults', () => {
+  assert.deepEqual(parseVoiceIceServers([]), []);
+  assert.deepEqual(resolveVoiceIceServers([]), [...DEFAULT_VOICE_ICE_SERVERS]);
+  assert.deepEqual(resolveVoiceIceServers(''), [...DEFAULT_VOICE_ICE_SERVERS]);
+  assert.deepEqual(
+    resolveVoiceIceServers('["stun:stun.example.test:3478"]'),
+    [{ urls: 'stun:stun.example.test:3478' }],
+  );
+  const voice = new VoiceChat({
+    RTCPeerConnectionImpl: FakePeerConnection,
+    AudioContextImpl: null,
+    mediaDevices: { getUserMedia: async () => new FakeStream() },
+    iceServers: [],
+  });
+  assert.deepEqual(voice.iceServers, [...DEFAULT_VOICE_ICE_SERVERS]);
+});
+
+test('voice restore applies mute and hidden-tab pause before announcing readiness', async () => {
+  const track = new FakeTrack();
+  const signals = [];
+  const voice = new VoiceChat({
+    RTCPeerConnectionImpl: FakePeerConnection,
+    AudioContextImpl: null,
+    mediaDevices: { getUserMedia: async () => new FakeStream(track) },
+    sendSignal: async (playerId, signal) => signals.push({ playerId, signal }),
+  });
+
+  voice.bindSession({ selfId: 'A', players: [{ id: 'A' }, { id: 'B' }] });
+  await voice.enable({ muted: true, paused: true });
+  assert.equal(voice.enabled, true);
+  assert.equal(voice.muted, true);
+  assert.equal(voice.paused, true);
+  assert.equal(voice.state, 'paused');
+  assert.equal(track.enabled, false);
+  assert.deepEqual(signals, [{ playerId: 'B', signal: { type: 'ready' } }]);
+
+  voice.setPaused(false);
+  assert.equal(track.enabled, false, 'leaving the hidden state must preserve the mute preference');
+  voice.setMuted(false);
+  assert.equal(track.enabled, true);
+  voice.disable();
 });
 
 test('voice chat is opt-in, negotiates deterministically, mutes, and releases the microphone', async () => {

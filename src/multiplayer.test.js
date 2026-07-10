@@ -4,9 +4,60 @@ import test from 'node:test';
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
   MultiplayerClient,
+  PUBLIC_MULTIPLAYER_FALLBACK_URL,
+  defaultMultiplayerUrl,
 } from './multiplayer.js';
 
 const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('configured multiplayer URL takes precedence over the shipped public fallback', () => {
+  assert.equal(defaultMultiplayerUrl({
+    location: { protocol: 'https:', hostname: 'threshold.vercel.app' },
+    configuredUrl: '  wss://rooms.example.com/custom  ',
+    publicUrl: 'wss://fallback.example.com/multiplayer',
+  }), 'wss://rooms.example.com/custom');
+});
+
+test('non-local HTTPS pages use the shipped public multiplayer fallback', () => {
+  assert.equal(
+    PUBLIC_MULTIPLAYER_FALLBACK_URL,
+    'wss://painful-jemmy-duolahypercho-f5a93587.koyeb.app/multiplayer',
+  );
+  assert.equal(defaultMultiplayerUrl({
+    location: { protocol: 'https:', hostname: 'threshold.vercel.app' },
+    configuredUrl: '',
+  }), PUBLIC_MULTIPLAYER_FALLBACK_URL);
+  assert.equal(defaultMultiplayerUrl({
+    location: { protocol: 'https:', hostname: 'play.example.com' },
+    configuredUrl: '',
+    publicUrl: 'wss://override.example.com/multiplayer',
+  }), 'wss://override.example.com/multiplayer');
+});
+
+test('local and LAN pages keep direct room-server URLs matching the page protocol', () => {
+  const cases = [
+    [{ protocol: 'http:', hostname: '127.0.0.1' }, 'ws://127.0.0.1:8787/multiplayer'],
+    [{ protocol: 'http:', hostname: '192.168.1.24' }, 'ws://192.168.1.24:8787/multiplayer'],
+    [{ protocol: 'https:', hostname: 'localhost' }, 'wss://localhost:8787/multiplayer'],
+    [{ protocol: 'https:', hostname: '192.168.1.24' }, 'wss://192.168.1.24:8787/multiplayer'],
+    [{ protocol: 'https:', hostname: 'threshold-station.local' }, 'wss://threshold-station.local:8787/multiplayer'],
+    [{ protocol: 'https:', hostname: 'threshold-station' }, 'wss://threshold-station:8787/multiplayer'],
+    [{ protocol: 'https:', hostname: '[::1]' }, 'wss://[::1]:8787/multiplayer'],
+  ];
+  for (const [location, expected] of cases) {
+    assert.equal(
+      defaultMultiplayerUrl({ location, configuredUrl: '' }),
+      expected,
+    );
+  }
+  assert.equal(defaultMultiplayerUrl({
+    location: { protocol: 'http:', hostname: 'public.example.com' },
+    configuredUrl: '',
+    port: 9000,
+    path: '/rooms',
+  }), 'ws://public.example.com:9000/rooms');
+  assert.equal(defaultMultiplayerUrl({ location: null, configuredUrl: '' }), 'ws://127.0.0.1:8787/multiplayer');
+});
 
 function eventWith(type, properties = {}) {
   const event = new Event(type);

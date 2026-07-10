@@ -23,6 +23,34 @@ function Hud() {
         <button id="sound-toggle" type="button" aria-label="Mute sound">SOUND ON</button>
       </header>
 
+      <div id="chat-panel" aria-label="Room text chat" hidden>
+        <div id="chat-log" role="log" aria-live="polite" aria-relevant="additions" />
+        <button
+          id="chat-toggle"
+          type="button"
+          aria-controls="chat-form"
+          aria-expanded="false"
+          aria-keyshortcuts="Enter"
+          aria-label="Open room text chat"
+        >
+          CHAT
+        </button>
+        <form id="chat-form" autoComplete="off">
+          <label className="visually-hidden" htmlFor="chat-input">Room chat message</label>
+          <input
+            id="chat-input"
+            name="chat"
+            type="text"
+            maxLength={120}
+            placeholder="ENTER TO SIGNAL"
+            enterKeyHint="send"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button id="chat-send" type="submit">SEND</button>
+        </form>
+      </div>
+
       <div id="crosshair" aria-hidden="true"><span /><span /></div>
       <div id="interact" role="status">E&nbsp;&nbsp;OPEN</div>
       <div id="message" role="status" />
@@ -65,33 +93,49 @@ function Overlay() {
       aria-labelledby="overlay-title"
     >
       <div className="overlay-noise" aria-hidden="true" />
+      <div className="overlay-tracking" aria-hidden="true" />
       <div className="overlay-frame">
-        <div id="classification" className="classification">THRESHOLD ARCHIVE / LEVEL 0</div>
+        <div className="overlay-brand">
+          <p id="brand-mark" className="brand-mark">THRESHOLD</p>
+          <div id="classification" className="classification">THRESHOLD ARCHIVE / LEVEL 0</div>
+        </div>
+
         <div className="overlay-copy">
           <p id="overlay-kicker">UNVERIFIED FOOTAGE</p>
           <h1 id="overlay-title">YOU WERE<br />NEVER HERE.</h1>
           <p id="overlay-body">The carpet is damp. The lights know where you are.</p>
         </div>
+
         <div className="overlay-actions">
-          <CoopLobby />
           <button id="enter-button" type="button">
             <span id="enter-label">ENTER LEVEL 0</span>
             <i aria-hidden="true">↳</i>
           </button>
-          <div id="controls-copy">
-            <span><b>WASD</b> MOVE</span>
-            <span><b>MOUSE</b> LOOK</span>
-            <span><b>SHIFT</b> RUN</span>
-            <span><b>C</b> CROUCH / HIDE</span>
-            <span><b>E</b> OPEN</span>
-            <span><b>F</b> LIGHT</span>
-            <span><b>Q</b> FLASH</span>
-          </div>
-          <p className="survival-brief">
-            LIGHT REVEALS YOU. GO DARK AND HOLD STILL TO HIDE. HOLD E TO REPAIR; ARCHIVES RESTORE
-            CHARGE; FLASHES ARE LOUD.
-          </p>
+
+          <details className="overlay-panel overlay-channel">
+            <summary>OPEN CHANNEL</summary>
+            <CoopLobby />
+          </details>
+
+          <details className="overlay-panel overlay-briefing">
+            <summary>BRIEFING</summary>
+            <div id="controls-copy">
+              <span><b>WASD</b> MOVE</span>
+              <span><b>MOUSE</b> LOOK</span>
+              <span><b>SHIFT</b> RUN</span>
+              <span><b>C</b> CROUCH / HIDE</span>
+              <span><b>E</b> OPEN</span>
+              <span><b>F</b> LIGHT</span>
+              <span><b>Q</b> FLASH</span>
+              <span><b>ENTER</b> CHAT</span>
+            </div>
+            <p className="survival-brief">
+              LIGHT REVEALS YOU. GO DARK AND HOLD STILL TO HIDE. HOLD E TO REPAIR; ARCHIVES RESTORE
+              CHARGE; FLASHES ARE LOUD.
+            </p>
+          </details>
         </div>
+
         <p className="headphones">HEADPHONES RECOMMENDED / CONTAINS FLASHING LIGHTS</p>
       </div>
     </section>
@@ -105,6 +149,7 @@ export function GameShell() {
       className="relative min-h-dvh w-full overflow-hidden"
       aria-label="THRESHOLD first-person horror game"
       aria-busy="true"
+      data-landing="true"
     >
       <div id="viewport" aria-hidden="true" />
       <div id="vignette" aria-hidden="true" />
@@ -118,7 +163,6 @@ export function GameShell() {
       <section id="unsupported" aria-live="assertive">
         <p>WEBGL 2 REQUIRED</p>
         <h1>This level cannot render here.</h1>
-        <span>Try a current desktop browser with hardware acceleration enabled.</span>
       </section>
     </main>
   );

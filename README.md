@@ -67,11 +67,11 @@ Audio travels peer-to-peer over WebRTC. The room server validates and relays onl
 
 For another device on the same network, everyone should open the `Network` address printed by `npm run dev`. Open that network address before copying an invite so the link contains a reachable host address. Local firewalls must allow ports `5173` and `8787`.
 
-The default room service supports local and LAN play. Public internet play requires hosting the built site and WebSocket service behind a public `wss://` endpoint. Set `VITE_MULTIPLAYER_URL` at build time when the room service is not on port `8787` of the page host. All players browsing the same room list must connect to the same WebSocket service; separate self-hosted servers have separate directories.
+The default room service supports local and LAN play at `<page-host>:8787/multiplayer`, using `ws://` from HTTP pages and `wss://` from HTTPS pages to avoid mixed-content blocking. On a non-local HTTPS deployment, the client automatically falls back to the shipped room service at `wss://painful-jemmy-duolahypercho-f5a93587.koyeb.app/multiplayer`, so Vercel co-op still works when `VITE_MULTIPLAYER_URL` is omitted. Set `VITE_MULTIPLAYER_URL` at build time to override that fallback with another public `wss://` service; the explicit environment value always wins. All players browsing the same room list must connect to the same WebSocket service; separate self-hosted servers have separate directories.
 
 The server accepts `MULTIPLAYER_HOST`, `MULTIPLAYER_PORT`, `MULTIPLAYER_PATH`, and `MULTIPLAYER_MAX_PLAYERS` environment variables. It defaults to `0.0.0.0`, port `8787`, path `/multiplayer`, and four players per room. The capacity can be lowered to two or three but is capped at four. Rooms are held in memory and disappear when the server restarts. For an internet deployment, terminate TLS at a reverse proxy, forward the configured WebSocket path, use `wss://`, apply connection limits, and do not treat room codes as authentication.
 
-Local and LAN voice uses direct ICE candidates by default. For public internet voice, serve the game over HTTPS/WSS and set `VITE_VOICE_ICE_SERVERS` to a JSON array of STUN/TURN `RTCIceServer` entries. Some NATs require TURN rather than STUN alone. Do not embed permanent TURN secrets in a public client build; use temporary credentials or a credential service for production. WebRTC peers can receive network-address metadata during connection setup, and the four-player mesh can still be demanding on mobile devices.
+Voice is opt-in per player (`VOICE OFF` → grant mic → `VOICE ON`). Both players must enable it. The client falls back to public STUN when `VITE_VOICE_ICE_SERVERS` is empty; for stubborn NATs serve over HTTPS/WSS and add TURN entries. Do not embed permanent TURN secrets in a public client build. Room text chat uses Enter while in a co-op room (server-stamped, rate-limited). WebRTC peers can receive network-address metadata during connection setup, and the four-player mesh can still be demanding on mobile devices.
 
 ### Self-hosting
 
@@ -87,6 +87,7 @@ See the [multiplayer server self-hosting guide](server/README.md) for a copyable
 - `Q`: use a loud, battery-hungry camera flash
 - Hold `E`: repair a fuse or valve
 - `E`: play an archive, check a lock, or open the EXIT
+- `Enter`: open room chat (co-op)
 - `Esc`: pause and release the mouse
 
 Touch devices use a movement pad, right-side swipe look, run and crouch controls, flashlight and flash buttons, and a contextual hold/open button. Touch targets reflow for small phones, and sound/voice controls remain usable during play.

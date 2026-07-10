@@ -17,6 +17,7 @@
  */
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 6;
+export const PUBLIC_MULTIPLAYER_FALLBACK_URL = 'wss://painful-jemmy-duolahypercho-f5a93587.koyeb.app/multiplayer';
 
 export class MultiplayerProtocolError extends Error {
   constructor(code, message, { retryable = false, cause, details = {} } = {}) {
@@ -52,12 +53,53 @@ function dispatchDetail(target, type, detail) {
   target.dispatchEvent(event);
 }
 
-export function defaultMultiplayerUrl({ port = 8787, path = '/multiplayer' } = {}) {
-  const configured = import.meta.env?.VITE_MULTIPLAYER_URL;
+function isLocalNetworkHostname(value) {
+  const hostname = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  if (hostname.endsWith('.local') || hostname.endsWith('.lan') || hostname.endsWith('.home')) return true;
+
+  if (hostname.includes(':')) {
+    return hostname === '::1'
+      || hostname.startsWith('fc')
+      || hostname.startsWith('fd')
+      || /^fe[89ab]/.test(hostname);
+  }
+
+  const octets = hostname.split('.').map((part) => Number(part));
+  if (octets.length === 4 && octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    return octets[0] === 0
+      || octets[0] === 10
+      || octets[0] === 127
+      || (octets[0] === 169 && octets[1] === 254)
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168);
+  }
+
+  return !hostname.includes('.');
+}
+
+export function defaultMultiplayerUrl({
+  port = 8787,
+  path = '/multiplayer',
+  location: locationOverride,
+  configuredUrl = import.meta.env?.VITE_MULTIPLAYER_URL,
+  publicUrl = PUBLIC_MULTIPLAYER_FALLBACK_URL,
+} = {}) {
+  const configured = typeof configuredUrl === 'string' ? configuredUrl.trim() : '';
   if (configured) return configured;
-  if (typeof window === 'undefined') return `ws://127.0.0.1:${port}${path}`;
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.hostname || '127.0.0.1'}:${port}${path}`;
+
+  const pageLocation = locationOverride === undefined
+    ? (typeof window === 'undefined' ? null : window.location)
+    : locationOverride;
+  if (!pageLocation) return `ws://127.0.0.1:${port}${path}`;
+
+  const hostname = String(pageLocation.hostname || '127.0.0.1');
+  if (pageLocation.protocol === 'https:' && !isLocalNetworkHostname(hostname)) {
+    const fallback = typeof publicUrl === 'string' ? publicUrl.trim() : '';
+    if (fallback) return fallback;
+  }
+  const directProtocol = pageLocation.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${directProtocol}//${hostname}:${port}${path}`;
 }
 
 function upsertPlayer(room, player) {
@@ -372,6 +414,13 @@ export class MultiplayerClient extends EventTarget {
       epoch: this.room?.epoch,
       targetPlayerId: String(targetPlayerId || '').trim().slice(0, 64),
       signal,
+    })).payload;
+  }
+
+  async sendChat(text) {
+    return (await this._request('room:chat', {
+      epoch: this.room?.epoch,
+      text: String(text || ''),
     })).payload;
   }
 

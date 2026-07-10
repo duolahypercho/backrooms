@@ -81,8 +81,8 @@ These variables belong to the Vite frontend deployment, not the Node server:
 
 | Variable | Required? | Purpose |
 | --- | --- | --- |
-| `VITE_MULTIPLAYER_URL` | Yes, for public co-op | Public `wss://` URL used by every player. |
-| `VITE_VOICE_ICE_SERVERS` | Recommended for public voice | JSON array of WebRTC STUN/TURN server definitions. |
+| `VITE_MULTIPLAYER_URL` | Optional override | Public `wss://` URL used by every player. When omitted on a non-local HTTPS page, the shipped Koyeb service is used. |
+| `VITE_VOICE_ICE_SERVERS` | Optional (STUN defaults built in) | JSON array of WebRTC STUN/TURN server definitions. Empty uses public STUN; TURN still needed for some NATs. |
 
 Example:
 
@@ -92,6 +92,8 @@ VITE_VOICE_ICE_SERVERS=[{"urls":"stun:stun.example.com:3478"},{"urls":"turns:tur
 ```
 
 All `VITE_*` values are bundled into public browser JavaScript. Never place permanent TURN credentials or other secrets in them. Use short-lived TURN credentials or a credential service for production. Redeploy the frontend whenever a Vite environment value changes.
+
+The frontend ships `wss://painful-jemmy-duolahypercho-f5a93587.koyeb.app/multiplayer` as its production fallback. `VITE_MULTIPLAYER_URL` takes precedence whenever it is set, which is the supported path for self-hosted or replacement room services. Local and LAN pages continue to connect directly to `<page-host>:8787/multiplayer`, using `ws://` from HTTP pages and `wss://` from HTTPS pages.
 
 ## Deploy on a managed platform
 
@@ -142,16 +144,16 @@ npm ci
 npm run build
 ```
 
-Set `VITE_MULTIPLAYER_URL` in the frontend host **before** building. The output is written to `dist/`.
+The shipped Koyeb fallback works without a frontend environment value. To use a different room service, set `VITE_MULTIPLAYER_URL` in the frontend host **before** building. The output is written to `dist/`.
 
 For Vercel:
 
 1. Import this repository and use `npm run build` with output directory `dist`.
-2. Add `VITE_MULTIPLAYER_URL=wss://YOUR-BACKEND/multiplayer` to the Production environment.
+2. Leave `VITE_MULTIPLAYER_URL` unset to use the shipped Koyeb room service, or set `VITE_MULTIPLAYER_URL=wss://YOUR-BACKEND/multiplayer` to override it.
 3. Optionally add `VITE_VOICE_ICE_SERVERS` for public voice.
 4. Redeploy the frontend.
 
-Every player who should see and join the same rooms must use the same `VITE_MULTIPLAYER_URL`. Separate server deployments have separate room directories.
+Every player who should see and join the same rooms must resolve to the same multiplayer URL, whether through the shipped fallback or `VITE_MULTIPLAYER_URL`. Separate server deployments have separate room directories.
 
 ## Automated deployment mirror
 
@@ -214,7 +216,7 @@ No account or database is required for the existing guest-room experience. Room 
 
 The Node server carries only WebRTC offer, answer, candidate, ready, and hang-up messages. Microphone audio does not pass through this server.
 
-Direct ICE candidates are often enough for LAN testing. Public users may be behind NATs that require STUN and, in some cases, a TURN relay. Configure the frontend's `VITE_VOICE_ICE_SERVERS` value with your chosen provider. If gameplay works but voice never connects between particular networks, missing TURN connectivity is the most likely cause.
+The client ships public STUN defaults when `VITE_VOICE_ICE_SERVERS` is empty. Public users may still need a TURN relay for some NATs—configure TURN through `VITE_VOICE_ICE_SERVERS` when needed. If gameplay works but voice never connects between particular networks, missing TURN connectivity is the most likely cause. Room text chat (`room:chat` / `text-chat-v1`) is separate from voice and works whenever players share a room.
 
 ## Operational checklist
 

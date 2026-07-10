@@ -502,3 +502,78 @@ test('host-authoritative evidence state wins and survives broadcasts and late sn
     await server.close();
   }
 });
+
+test('text chat is room-scoped, identity-stamped, sanitized, and rate limited', async () => {
+  const server = createMultiplayerServer({
+    host: '127.0.0.1',
+    port: 0,
+    maxPlayers: 4,
+    heartbeatMs: 60_000,
+    chatRateBurst: 2,
+    chatRatePerSecond: 1,
+  });
+  const address = await server.listen();
+  const url = `ws://127.0.0.1:${address.port}${server.config.path}`;
+  const clients = [];
+  const makeClient = () => {
+    const client = new MultiplayerClient({ url, WebSocketImpl: WebSocket, autoReconnect: false });
+    clients.push(client);
+    return client;
+  };
+
+  try {
+    const host = makeClient();
+    const teammate = makeClient();
+    const outsider = makeClient();
+    const hostJoin = await host.createRoom({ name: 'Caller' });
+    assert.equal(host.serverCapabilities.includes('text-chat-v1'), true);
+    const teammateJoin = await teammate.joinRoom(hostJoin.room.code, { name: 'Receiver' });
+    await outsider.createRoom({ name: 'Other room' });
+
+    const leaked = [];
+    const stopLeak = outsider.on('room:chat', (payload) => leaked.push(payload));
+    const incoming = waitFor(teammate, 'room:chat');
+    const ack = await host.sendChat('  hallway clear\u0007  ');
+    const message = await incoming;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stopLeak();
+
+    assert.equal(ack.delivered, true);
+    assert.equal(typeof ack.sentAt, 'number');
+    assert.equal(message.epoch, hostJoin.room.epoch);
+    assert.equal(message.fromPlayerId, hostJoin.self.id);
+    assert.equal(message.fromName, 'Caller');
+    assert.equal(message.text, 'hallway clear');
+    assert.equal(leaked.length, 0);
+
+    await assert.rejects(host.sendChat('   '), (error) => error.code === 'INVALID_CHAT');
+
+    const longIncoming = waitFor(teammate, 'room:chat');
+    const longAck = await host.sendChat(`a${'b'.repeat(200)}`);
+    const longMessage = await longIncoming;
+    assert.equal(longAck.delivered, true);
+    assert.equal(longMessage.text.length, 120);
+    assert.equal(longMessage.text, `a${'b'.repeat(119)}`);
+
+    await assert.rejects(
+      host.sendChat('too fast'),
+      (error) => error.code === 'CHAT_RATE_LIMITED' && error.retryable === true,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stamped = waitFor(teammate, 'room:chat');
+    await host._request('room:chat', {
+      epoch: host.room?.epoch,
+      text: 'still me',
+      fromPlayerId: teammateJoin.self.id,
+      fromName: 'Impostor',
+    });
+    const stampedMessage = await stamped;
+    assert.equal(stampedMessage.fromPlayerId, hostJoin.self.id);
+    assert.equal(stampedMessage.fromName, 'Caller');
+    assert.equal(stampedMessage.text, 'still me');
+  } finally {
+    for (const client of clients) client.disconnect({ forgetRoom: true });
+    await server.close();
+  }
+});

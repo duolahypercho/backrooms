@@ -11,6 +11,31 @@
 const TAU = Math.PI * 2;
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 
+// Keeps the planted boot within a few millimeters of the floor across the full
+// walking-speed range. The terms model the articulated leg arc without doing
+// per-frame geometry bounds work for every remote player.
+function walkingFootPlant(motion, gaitMagnitude) {
+  const motionSquared = motion * motion;
+  const gaitSquared = gaitMagnitude * gaitMagnitude;
+  const gaitCubed = gaitSquared * gaitMagnitude;
+  return motion * (
+    0.003404
+    + 0.200791 * gaitMagnitude
+    + 0.012042 * gaitSquared
+    - 0.00182 * gaitCubed
+  ) + motionSquared * (
+    0.000188
+    - 0.009221 * gaitMagnitude
+    - 0.315173 * gaitSquared
+    - 0.063543 * gaitCubed
+  ) + motionSquared * motion * (
+    -0.000971
+    + 0.018543 * gaitMagnitude
+    - 0.078563 * gaitSquared
+    + 0.085224 * gaitCubed
+  );
+}
+
 function makeResources(THREE, options) {
   const geometries = new Set();
   const materials = new Set();
@@ -51,6 +76,8 @@ function makeResources(THREE, options) {
     canister: geometry(new THREE.CylinderGeometry(0.037, 0.042, 0.25, 18, 1)),
     antenna: geometry(new THREE.CylinderGeometry(0.006, 0.006, 0.2, 8, 1)),
     patch: geometry(new THREE.BoxGeometry(0.105, 0.085, 0.018)),
+    idPlate: geometry(new THREE.BoxGeometry(0.092, 0.038, 0.012)),
+    mic: geometry(new THREE.SphereGeometry(1, 12, 10)),
     chestPanel: geometry(new THREE.CapsuleGeometry(0.09, 0.1, 6, 18)),
     harnessStrap: geometry(new THREE.BoxGeometry(0.031, 0.39, 0.018)),
     reflector: geometry(new THREE.BoxGeometry(0.19, 0.025, 0.014)),
@@ -69,24 +96,34 @@ function makeResources(THREE, options) {
     flashlightBody: geometry(new THREE.CylinderGeometry(0.025, 0.035, 0.16, 14, 1)),
     flashlightLens: geometry(new THREE.CylinderGeometry(0.036, 0.036, 0.012, 16, 1)),
     flashlightBeam: geometry(new THREE.CylinderGeometry(2.6, 0, 8, 12, 1, true)),
-    dark: material({ color: 0x101411, roughness: 0.72, metalness: 0.08 }),
-    hardware: material({ color: 0x4c5350, roughness: 0.5, metalness: 0.42 }),
+    dark: material({ color: 0x0c0e0c, roughness: 0.78, metalness: 0.14 }),
+    hardware: material({ color: 0x6a716c, roughness: 0.38, metalness: 0.62 }),
+    rubber: material({ color: 0x151816, roughness: 0.94, metalness: 0.02 }),
     visorMaterial: material({
-      color: 0x172120,
-      emissive: 0x07100f,
-      emissiveIntensity: 0.24,
-      roughness: 0.12,
-      metalness: 0.32,
+      color: 0x0a1614,
+      emissive: 0x0a2a24,
+      emissiveIntensity: 0.18,
+      roughness: 0.08,
+      metalness: 0.55,
+      transparent: true,
+      opacity: 0.82,
     }),
     reflective: material({
-      color: 0xd6d2a6,
-      emissive: 0x33311e,
-      emissiveIntensity: 0.14,
-      roughness: 0.38,
-      metalness: 0.12,
+      color: 0xe4dfb0,
+      emissive: 0x2a2814,
+      emissiveIntensity: 0.2,
+      roughness: 0.32,
+      metalness: 0.18,
     }),
-    glove: material({ color: 0x171a17, roughness: 0.9, metalness: 0 }),
-    boot: material({ color: 0x0d0f0d, roughness: 0.94, metalness: 0 }),
+    glove: material({ color: 0x1a1c18, roughness: 0.96, metalness: 0 }),
+    boot: material({ color: 0x090b09, roughness: 0.97, metalness: 0.04 }),
+    idPlateMaterial: material({
+      color: 0xc8c4a0,
+      emissive: 0x1a1a10,
+      emissiveIntensity: 0.08,
+      roughness: 0.45,
+      metalness: 0.35,
+    }),
     fabricMap,
     lens: material({
       color: options.flashlightColor,
@@ -172,23 +209,21 @@ function makeNameTag(THREE, name, color, standingHeight, crouchHeight) {
       if (nextColor !== undefined) this.color.set(nextColor);
       const ctx = this.context;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'rgba(5, 8, 7, 0.76)';
-      ctx.beginPath();
-      if (typeof ctx.roundRect === 'function') ctx.roundRect(16, 17, 480, 94, 24);
-      else ctx.rect(16, 17, 480, 94);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(225, 232, 216, 0.26)';
-      ctx.lineWidth = 3;
-      ctx.stroke();
+      ctx.fillStyle = 'rgba(6, 8, 6, 0.82)';
+      ctx.fillRect(12, 28, 488, 72);
+      ctx.strokeStyle = 'rgba(212, 208, 168, 0.34)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(12, 28, 488, 72);
       ctx.fillStyle = `#${this.color.getHexString()}`;
-      ctx.beginPath();
-      ctx.arc(55, 64, 13, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = '#edf0e7';
-      ctx.font = '600 38px system-ui, sans-serif';
+      ctx.fillRect(28, 44, 10, 40);
+      ctx.fillStyle = 'rgba(212, 208, 168, 0.55)';
+      ctx.font = '600 14px "Courier New", monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this.name, 84, 64, 382);
+      ctx.fillText('SURVEYOR', 52, 48);
+      ctx.fillStyle = '#edf0e7';
+      ctx.font = '700 34px "Courier New", monospace';
+      ctx.fillText(this.name.toUpperCase(), 52, 78, 420);
       texture.needsUpdate = true;
     },
     dispose() {
@@ -213,12 +248,13 @@ function createAvatar(THREE, resources, options, snapshot) {
     color: snapshot.color ?? options.defaultColor,
     map: resources.fabricMap,
     bumpMap: resources.fabricMap,
-    bumpScale: resources.fabricMap ? 0.018 : 0,
-    roughness: 0.86,
-    metalness: 0.02,
+    bumpScale: resources.fabricMap ? 0.028 : 0,
+    roughness: 0.9,
+    metalness: 0.04,
   });
   const accent = clothing.clone();
-  accent.color.offsetHSL(0, -0.04, -0.105);
+  accent.color.offsetHSL(0, -0.05, -0.12);
+  accent.roughness = 0.84;
   const ownedMaterials = [clothing, accent];
 
   const addMesh = (
@@ -250,21 +286,21 @@ function createAvatar(THREE, resources, options, snapshot) {
 
   // The root is the networked floor point; keep the boot soles just above it.
   const hips = joint('hips', bodyRoot, [0, 0.995, 0]);
-  addMesh('pelvis', resources.pelvis, accent, hips, [0, 0, 0], [1.28, 0.78, 0.86]);
-  addMesh('utility_belt', resources.belt, resources.dark, hips, [0, 0.01, 0]);
+  addMesh('pelvis', resources.pelvis, accent, hips, [0, 0, 0], [1.22, 0.82, 0.9]);
+  addMesh('utility_belt', resources.belt, resources.dark, hips, [0, 0.01, 0], [0.98, 1, 1.02]);
   addMesh('belt_buckle', resources.buckle, resources.hardware, hips, [0, 0.008, 0.119]);
   addMesh('left_belt_pouch', resources.pouch, accent, hips, [-0.126, -0.04, 0.11], [0.96, 0.86, 0.58]);
   addMesh('right_belt_pouch', resources.pouch, accent, hips, [0.126, -0.04, 0.11], [0.96, 0.86, 0.58]);
 
   const torso = joint('torso', hips, [0, 0.12, 0]);
-  addMesh('torso_flesh', resources.torso, clothing, torso, [0, 0.26, 0], [1.22, 1, 0.74]);
-  addMesh('neck_seal', resources.neck, accent, torso, [0, 0.525, 0]);
+  addMesh('torso_flesh', resources.torso, clothing, torso, [0, 0.27, 0], [1.18, 1.08, 0.78]);
+  addMesh('neck_seal', resources.neck, resources.rubber, torso, [0, 0.545, 0], [1.02, 1.05, 1.02]);
   addMesh(
     'collar_ring',
     resources.collar,
-    resources.dark,
+    resources.hardware,
     torso,
-    [0, 0.49, 0],
+    [0, 0.51, 0],
     [1, 1, 1],
     [Math.PI / 2, 0, 0],
   );
@@ -283,33 +319,35 @@ function createAvatar(THREE, resources, options, snapshot) {
   );
   addMesh('chest_reflector', resources.reflector, resources.reflective, torso, [0, 0.185, 0.151]);
   addMesh('team_patch', resources.patch, resources.reflective, torso, [-0.086, 0.315, 0.153]);
+  addMesh('id_plate', resources.idPlate, resources.idPlateMaterial, torso, [0.078, 0.318, 0.154]);
 
-  addMesh('backpack', resources.backpack, accent, torso, [0, 0.27, -0.16]);
-  addMesh('backpack_access_panel', resources.backpackPanel, resources.dark, torso, [0, 0.275, -0.239]);
-  addMesh('left_air_canister', resources.canister, resources.hardware, torso, [-0.086, 0.26, -0.257]);
-  addMesh('right_air_canister', resources.canister, resources.hardware, torso, [0.086, 0.26, -0.257]);
-  addMesh('radio_antenna', resources.antenna, resources.dark, torso, [0.103, 0.535, -0.21]);
-  addMesh('backpack_reflector', resources.reflector, resources.reflective, torso, [0, 0.39, -0.256]);
+  addMesh('backpack', resources.backpack, accent, torso, [0, 0.28, -0.165], [1, 1.04, 1]);
+  addMesh('backpack_access_panel', resources.backpackPanel, resources.dark, torso, [0, 0.285, -0.245]);
+  addMesh('left_air_canister', resources.canister, resources.hardware, torso, [-0.086, 0.27, -0.262]);
+  addMesh('right_air_canister', resources.canister, resources.hardware, torso, [0.086, 0.27, -0.262]);
+  addMesh('radio_antenna', resources.antenna, resources.hardware, torso, [0.103, 0.55, -0.21]);
+  addMesh('shoulder_mic', resources.mic, resources.dark, torso, [-0.195, 0.46, 0.06], [0.018, 0.018, 0.022]);
+  addMesh('backpack_reflector', resources.reflector, resources.reflective, torso, [0, 0.4, -0.262]);
 
-  const head = joint('head', torso, [0, 0.56, 0.006]);
-  addMesh('hood', resources.head, clothing, head, [0, 0, 0], [0.12, 0.145, 0.12]);
-  addMesh('visor_frame', resources.visorFrame, resources.dark, head, [0, 0.018, 0.126], [0.11, 0.067, 0.02]);
+  const head = joint('head', torso, [0, 0.585, 0.004]);
+  addMesh('hood', resources.head, clothing, head, [0, 0.01, 0], [0.108, 0.128, 0.112]);
+  addMesh('visor_frame', resources.visorFrame, resources.hardware, head, [0, 0.02, 0.118], [0.1, 0.062, 0.018]);
   const visor = addMesh(
     'visor',
     resources.visor,
     resources.visorMaterial,
     head,
-    [0, 0.018, 0.116],
-    [0.101, 0.058, 0.011],
+    [0, 0.02, 0.11],
+    [0.092, 0.054, 0.012],
   );
   visor.castShadow = false;
   const respirator = addMesh(
     'respirator',
     resources.respirator,
-    resources.dark,
+    resources.rubber,
     head,
-    [0, -0.063, 0.125],
-    [1, 1, 1],
+    [0, -0.055, 0.118],
+    [1.02, 1, 1.05],
     [Math.PI / 2, 0, 0],
   );
   respirator.castShadow = false;
@@ -493,7 +531,7 @@ function createAvatar(THREE, resources, options, snapshot) {
     rig,
     setColor(color) {
       clothing.color.set(color);
-      accent.color.copy(clothing.color).offsetHSL(0, -0.04, -0.105);
+      accent.color.copy(clothing.color).offsetHSL(0, -0.05, -0.12);
       if (tag) tag.draw(tag.name, color);
     },
     setName(name) {
@@ -524,30 +562,40 @@ function animateAvatar(entry, deltaSeconds) {
   const gait = Math.sin(entry.gaitPhase);
   const quarter = Math.cos(entry.gaitPhase);
   const crouch = entry.crouchAmount;
-  const stride = motion * (running ? 0.78 : 0.56) * (1 - crouch * 0.35);
-  const bob = Math.abs(Math.sin(entry.gaitPhase)) * motion * (running ? 0.035 : 0.018);
-  const groundCompensation = gait * gait * motion * (running ? 0.22 : 0.065) * (1 - crouch * 0.5);
-  const runLean = running ? motion * 0.13 : 0;
-  const breath = Math.sin(entry.animationTime * (running ? 8.4 : 3.1)) * (running ? 0.012 : 0.007);
-  const lateralSway = quarter * motion * (running ? 0.018 : 0.011);
+  const stride = motion * (running ? 0.82 : 0.58) * (1 - crouch * 0.35);
+  const gaitMagnitude = Math.abs(gait);
+  const gaitSquared = gait * gait;
+  const runningVertical = motion * (
+    0.0068 + gaitMagnitude * 0.244 - gaitSquared * 0.529
+  );
+  const walkingVertical = walkingFootPlant(motion, gaitMagnitude);
+  const crouchedLift = motion * 0.006;
+  const crouchedBob = -gaitMagnitude * motion * 0.011;
+  const crouchedGroundCompensation = gaitSquared * motion * 0.044;
+  const uprightVertical = running ? runningVertical : walkingVertical;
+  const crouchedVertical = crouchedLift + crouchedBob - crouchedGroundCompensation;
+  const plantedVertical = uprightVertical + (crouchedVertical - uprightVertical) * crouch;
+  const runLean = running ? motion * 0.15 : 0;
+  const breath = Math.sin(entry.animationTime * (running ? 8.4 : 2.6)) * (running ? 0.014 : 0.009);
+  const lateralSway = quarter * motion * (running ? 0.02 : 0.012);
 
-  rig.bodyRoot.position.y = -crouch * 0.13 + bob - groundCompensation;
+  rig.bodyRoot.position.y = -crouch * 0.1 + plantedVertical;
   rig.bodyRoot.rotation.set(0, 0, lateralSway);
-  rig.hips.position.set(-quarter * motion * 0.012, 0.995, 0);
-  rig.hips.rotation.set(-runLean * 0.2 + crouch * 0.055, -gait * motion * 0.055, quarter * motion * 0.018);
+  rig.hips.position.set(-quarter * motion * 0.014, 0.995, 0);
+  rig.hips.rotation.set(-runLean * 0.22 + crouch * 0.055, -gait * motion * 0.06, quarter * motion * 0.02);
   rig.torso.position.y = 0.12 - crouch * 0.1;
-  rig.torso.rotation.set(runLean + crouch * 0.28 + breath, gait * motion * 0.065, -quarter * motion * 0.02);
-  rig.head.position.y = 0.56 + breath * 0.28;
+  rig.torso.rotation.set(runLean + crouch * 0.28 + breath, gait * motion * 0.07, -quarter * motion * 0.022);
+  rig.head.position.y = 0.585 + breath * 0.32;
   rig.head.rotation.set(
-    -entry.displayPitch - runLean * 0.32 - crouch * 0.08,
-    -gait * motion * 0.025,
-    quarter * motion * 0.012,
+    -entry.displayPitch - runLean * 0.34 - crouch * 0.08,
+    -gait * motion * 0.028,
+    quarter * motion * 0.014,
   );
 
   const leftLeg = -gait * stride;
   const rightLeg = gait * stride;
-  rig.legs.left.hip.rotation.set(leftLeg - crouch * 0.65, 0, 0);
-  rig.legs.right.hip.rotation.set(rightLeg - crouch * 0.65, 0, 0);
+  rig.legs.left.hip.rotation.set(leftLeg - crouch * 0.65, 0.02 * motion, 0);
+  rig.legs.right.hip.rotation.set(rightLeg - crouch * 0.65, -0.02 * motion, 0);
   rig.legs.left.knee.rotation.set(Math.max(0, -gait) * stride * 0.85 + crouch * 1.1, 0, 0);
   rig.legs.right.knee.rotation.set(Math.max(0, gait) * stride * 0.85 + crouch * 1.1, 0, 0);
   rig.legs.left.foot.rotation.set(-leftLeg * 0.32 - crouch * 0.64, 0, 0);
@@ -567,7 +615,7 @@ function animateAvatar(entry, deltaSeconds) {
 export default Object.freeze({
   id: 'threshold-surveyor',
   name: 'Threshold Surveyor',
-  version: '1.4.0',
+  version: '1.5.0',
   order: 100,
   createFactory({ THREE, options }) {
     if (!THREE || typeof THREE.Group !== 'function') {

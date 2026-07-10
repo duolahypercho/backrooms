@@ -39,6 +39,16 @@ export function parseVoiceIceServers(value) {
   return entries.map(normalizeIceServer).filter(Boolean).slice(0, 8);
 }
 
+export const DEFAULT_VOICE_ICE_SERVERS = Object.freeze([
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+]);
+
+export function resolveVoiceIceServers(value) {
+  const parsed = parseVoiceIceServers(value);
+  return parsed.length ? parsed : DEFAULT_VOICE_ICE_SERVERS.map((server) => ({ ...server }));
+}
+
 function defaultAudioContext() {
   if (typeof window === 'undefined') return null;
   return window.AudioContext || window.webkitAudioContext || null;
@@ -68,7 +78,7 @@ export class VoiceChat {
       : options.AudioContextImpl;
     this.document = options.documentImpl ?? globalThis.document ?? null;
     this.MediaStreamImpl = options.MediaStreamImpl ?? globalThis.MediaStream ?? null;
-    this.iceServers = parseVoiceIceServers(options.iceServers || []);
+    this.iceServers = resolveVoiceIceServers(options.iceServers);
     this.onStateChange = options.onStateChange || (() => {});
     this.onError = options.onError || (() => {});
 
@@ -148,7 +158,7 @@ export class VoiceChat {
     this.closePeer(id);
   }
 
-  async enable() {
+  async enable({ muted = false, paused = false } = {}) {
     if (this.enabled && this.localStream) return this.snapshot();
     if (!this.supported) {
       const error = new Error('Voice chat is not supported by this browser.');
@@ -165,7 +175,7 @@ export class VoiceChat {
 
     const generation = ++this.generation;
     this.emitState('requesting');
-    const audioContextReady = this.ensureAudioContext().catch(() => null);
+    const audioContextReady = this.ensureAudioContext({ resume: !paused }).catch(() => null);
     let stream;
     try {
       stream = await this.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS, video: false });
@@ -188,11 +198,12 @@ export class VoiceChat {
 
     this.localStream = stream;
     this.enabled = true;
-    this.muted = false;
-    this.paused = false;
-    this.setLocalTrackEnabled(true);
+    this.muted = Boolean(muted);
+    this.paused = Boolean(paused);
+    this.setLocalTrackEnabled(!this.muted && !this.paused);
     await audioContextReady;
-    this.emitState('live');
+    if (this.paused) await Promise.resolve(this.audioContext?.suspend?.()).catch(() => {});
+    this.emitState(this.paused ? 'paused' : 'live');
     this.announceReady();
     for (const playerId of this.remoteReady) this.maybeOffer(playerId);
     return this.snapshot();
@@ -244,12 +255,12 @@ export class VoiceChat {
     for (const track of this.localStream?.getAudioTracks?.() || []) track.enabled = Boolean(enabled);
   }
 
-  async ensureAudioContext() {
+  async ensureAudioContext({ resume = true } = {}) {
     if (!this.AudioContextImpl) return null;
     if (!this.audioContext || this.audioContext.state === 'closed') {
       this.audioContext = new this.AudioContextImpl();
     }
-    if (this.audioContext.state === 'suspended') await this.audioContext.resume?.();
+    if (resume && this.audioContext.state === 'suspended') await this.audioContext.resume?.();
     return this.audioContext;
   }
 
@@ -302,6 +313,9 @@ export class VoiceChat {
     connection.ontrack = (event) => this.attachRemoteStream(peer, event);
     connection.onconnectionstatechange = () => {
       if (connection.connectionState === 'failed') {
+        const error = new Error('Voice peer connection failed. STUN/TURN may be required on this network.');
+        error.code = 'VOICE_ICE_FAILED';
+        this.onError(error);
         this.closePeer(id);
         if (this.enabled && this.remoteReady.has(id)) this.signal(id, { type: 'ready' });
       }
@@ -386,7 +400,7 @@ export class VoiceChat {
     let stream = event.streams?.[0];
     if (!stream && event.track && this.MediaStreamImpl) stream = new this.MediaStreamImpl([event.track]);
     if (!stream) return;
-    const context = await this.ensureAudioContext().catch(() => null);
+    const context = await this.ensureAudioContext({ resume: !this.paused }).catch(() => null);
     if (context?.createMediaStreamSource) {
       try {
         peer.mediaSource = context.createMediaStreamSource(stream);
