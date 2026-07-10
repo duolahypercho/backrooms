@@ -70,6 +70,10 @@ The server accepts `MULTIPLAYER_HOST`, `MULTIPLAYER_PORT`, `MULTIPLAYER_PATH`, a
 
 Local and LAN voice uses direct ICE candidates by default. For public internet voice, serve the game over HTTPS/WSS and set `VITE_VOICE_ICE_SERVERS` to a JSON array of STUN/TURN `RTCIceServer` entries. Some NATs require TURN rather than STUN alone. Do not embed permanent TURN secrets in a public client build; use temporary credentials or a credential service for production. WebRTC peers can receive network-address metadata during connection setup, and the four-player mesh can still be demanding on mobile devices.
 
+### Self-hosting
+
+See the [multiplayer server self-hosting guide](server/README.md) for a copyable environment template, local verification, managed Web Service and Koyeb configuration, Vercel wiring, reverse-proxy setup, voice requirements, scaling limitations, security guidance, and troubleshooting.
+
 ## Controls
 
 - `WASD` or arrow keys: move
