@@ -1,7 +1,30 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { LEVELS, getLevelIndex } from './levels.js';
+import { LEVELS, LEVEL_IDS, getLevelIndex } from './levels/index.js';
+import { createGameContentFingerprint } from './levels/fingerprint.js';
 import { animateMonster, buildMonster } from './monster.js';
+import { createMultiplayerClient } from './multiplayer.js';
+import { createRemotePlayerManager } from './remote-players.js';
+import { createWaitingRoomPreview } from './waiting-room-preview.js';
+import { characterCatalog } from './characters/index.js';
+import { createVoiceChat } from './voice-chat.js';
+import { createAtmosphereDirector } from './atmosphere.js';
+import { buildIncidentGroup, planIncidents } from './incidents.js';
+import { chooseSpacedCells, enumerateCellIndexes } from './content-placement.js';
+import {
+  ROOM_CAPACITY,
+  SURVIVOR_LOOKS,
+  survivorLook,
+  waitingRoomModel,
+} from './waiting-room.js';
+import {
+  perceptionProfile,
+  spendFlash,
+  stepBattery,
+  stepFear,
+  stepHiding,
+  stepNoiseImpulse,
+} from './survival.js';
 import './style.css';
 
 const N = 1;
@@ -14,6 +37,7 @@ const DIRECTIONS = [
   { bit: S, opposite: N, dc: 0, dr: 1 },
   { bit: W, opposite: E, dc: -1, dr: 0 },
 ];
+const GAME_CONTENT_FINGERPRINT = createGameContentFingerprint(LEVELS, characterCatalog.definitions);
 
 const CELL_SIZE = 4;
 const WALL_HEIGHT = 3.05;
@@ -35,11 +59,45 @@ const dom = {
   status: document.querySelector('#status'),
   levelLabel: document.querySelector('#level-label'),
   objective: document.querySelector('#objective'),
+  coopHud: document.querySelector('#coop-hud'),
+  coopRoom: document.querySelector('#coop-room'),
+  coopRoster: document.querySelector('#coop-roster'),
+  voiceControls: document.querySelector('#voice-controls'),
+  voiceToggle: document.querySelector('#voice-toggle'),
+  micToggle: document.querySelector('#mic-toggle'),
+  voiceState: document.querySelector('#voice-state'),
+  coopLobby: document.querySelector('#coop-lobby'),
+  modeSolo: document.querySelector('#mode-solo'),
+  modeHost: document.querySelector('#mode-host'),
+  modeJoin: document.querySelector('#mode-join'),
+  modeRooms: document.querySelector('#mode-rooms'),
+  coopForm: document.querySelector('#coop-form'),
+  playerName: document.querySelector('#player-name'),
+  roomCodeField: document.querySelector('#room-code-field'),
+  roomCode: document.querySelector('#room-code'),
+  roomVisibility: document.querySelector('#room-visibility'),
+  coopConnect: document.querySelector('#coop-connect'),
+  roomDirectory: document.querySelector('#room-directory'),
+  roomDirectoryCount: document.querySelector('#room-directory-count'),
+  roomList: document.querySelector('#room-list'),
+  roomDirectoryEmpty: document.querySelector('#room-directory-empty'),
+  waitingRoom: document.querySelector('#waiting-room'),
+  waitingRoomCount: document.querySelector('#waiting-room-count'),
+  waitingSlots: document.querySelector('#waiting-slots'),
+  lookPicker: document.querySelector('#look-picker'),
+  waitingRoomStatus: document.querySelector('#waiting-room-status'),
+  coopState: document.querySelector('#coop-state'),
+  copyInvite: document.querySelector('#copy-invite'),
   soundToggle: document.querySelector('#sound-toggle'),
   interact: document.querySelector('#interact'),
   message: document.querySelector('#message'),
   stamina: document.querySelector('#stamina'),
   staminaFill: document.querySelector('#stamina span'),
+  flashlightHud: document.querySelector('#flashlight-hud'),
+  flashlightLabel: document.querySelector('#flashlight-label'),
+  flashlightFill: document.querySelector('#flashlight-hud i'),
+  evidenceState: document.querySelector('#evidence-state'),
+  stealthState: document.querySelector('#stealth-state'),
   threat: document.querySelector('#threat'),
   grain: document.querySelector('#grain'),
   touchUi: document.querySelector('#touch-ui'),
@@ -47,6 +105,9 @@ const dom = {
   moveStick: document.querySelector('#move-stick'),
   touchLook: document.querySelector('#touch-look'),
   touchSprint: document.querySelector('#touch-sprint'),
+  touchCrouch: document.querySelector('#touch-crouch'),
+  touchLight: document.querySelector('#touch-light'),
+  touchFlash: document.querySelector('#touch-flash'),
   touchAction: document.querySelector('#touch-action'),
   unsupported: document.querySelector('#unsupported'),
 };
@@ -55,6 +116,47 @@ const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const lerp = (a, b, t) => a + (b - a) * t;
 const rgbInt = ([red, green, blue]) => (red << 16) | (green << 8) | blue;
 const randomBetween = ([minimum, maximum], random) => minimum + random() * (maximum - minimum);
+
+function shuffleInPlace(items, random) {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
+  }
+  return items;
+}
+
+function normalizeCallsign(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9 _-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 18);
+}
+
+function normalizeRoomCode(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 8);
+}
+
+function eventDetail(event) {
+  return event?.detail ?? event ?? {};
+}
+
+function playerColor(id, lookId) {
+  const explicitLook = SURVIVOR_LOOKS.find((look) => look.id === String(lookId || '').toLowerCase());
+  if (explicitLook) return explicitLook.color;
+  const text = String(id || 'team');
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const colors = [0x596653, 0x687261, 0x6d6553, 0x52696c, 0x70615b, 0x5f6b59];
+  return colors[Math.abs(hash) % colors.length];
+}
 
 function mulberry32(seed) {
   let value = seed >>> 0;
@@ -137,9 +239,11 @@ class Maze {
       this.options.minRooms ?? 8,
       Math.floor(this.cells.length / (this.options.roomDivisor ?? 54)),
     );
+    const roomMinimum = this.options.roomSize?.min ?? 2;
+    const roomMaximum = this.options.roomSize?.max ?? 4;
     for (let i = 0; i < roomCount; i += 1) {
-      const width = 2 + Math.floor(this.random() * 3);
-      const height = 2 + Math.floor(this.random() * 3);
+      const width = roomMinimum + Math.floor(this.random() * (roomMaximum - roomMinimum + 1));
+      const height = roomMinimum + Math.floor(this.random() * (roomMaximum - roomMinimum + 1));
       const originCol = 1 + Math.floor(this.random() * (this.cols - width - 2));
       const originRow = 1 + Math.floor(this.random() * (this.rows - height - 2));
 
@@ -489,8 +593,9 @@ class AudioEngine {
     oscillator.stop(now + 0.95);
   }
 
-  monsterStep(pan, distance, running = false) {
+  monsterStep(pan, distance, running = false, sound = {}) {
     if (!this.context || !this.noiseBuffer || distance > 22) return;
+    sound = Object.keys(sound).length ? sound : (this.profile.monsterSound || {});
     const now = this.context.currentTime;
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
@@ -498,19 +603,20 @@ class AudioEngine {
     const gain = this.context.createGain();
     const proximity = clamp(1 - distance / 22, 0, 1);
     source.buffer = this.noiseBuffer;
-    source.playbackRate.value = running ? 0.54 : 0.39;
+    source.playbackRate.value = (running ? 0.54 : 0.39) * lerp(1, 0.78, clamp(Number(sound.drag) || 0, 0, 1));
     filter.type = 'lowpass';
     filter.frequency.value = running ? 155 : 112;
     panner.pan.value = clamp(pan, -1, 1);
-    gain.gain.setValueAtTime(0.2 * proximity, now);
+    gain.gain.setValueAtTime(0.2 * proximity * clamp(Number(sound.stepWeight) || 1, 0.35, 1.6), now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
     source.connect(filter).connect(panner).connect(gain).connect(this.master);
     source.start(now, Math.random() * 1.4, 0.3);
     source.stop(now + 0.32);
   }
 
-  monsterBreath(pan, distance, chasing) {
+  monsterBreath(pan, distance, chasing, sound = {}) {
     if (!this.context || !this.noiseBuffer) return;
+    sound = Object.keys(sound).length ? sound : (this.profile.monsterSound || {});
     const now = this.context.currentTime;
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
@@ -518,13 +624,16 @@ class AudioEngine {
     const gain = this.context.createGain();
     const proximity = clamp(1 - distance / 20, 0, 1);
     source.buffer = this.noiseBuffer;
-    source.playbackRate.value = chasing ? 0.2 : 0.14;
+    source.playbackRate.value = (chasing ? 0.2 : 0.14) * clamp(Number(sound.breathPitch) || 1, 0.4, 1.4);
     filter.type = 'bandpass';
     filter.frequency.value = chasing ? 145 : 92;
     filter.Q.value = 1.4;
     panner.pan.value = clamp(pan, -1, 1);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime((chasing ? 0.2 : 0.12) * proximity, now + 0.16);
+    gain.gain.exponentialRampToValueAtTime(
+      (chasing ? 0.2 : 0.12) * proximity * clamp(Number(sound.breathWeight) || 1, 0.3, 1.5),
+      now + 0.16,
+    );
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
     source.connect(filter).connect(panner).connect(gain).connect(this.master);
     source.start(now, Math.random() * 0.8, 1.1);
@@ -546,6 +655,102 @@ class AudioEngine {
       oscillator.start(now + index * 0.08);
       oscillator.stop(now + index * 0.08 + 0.45);
     }
+  }
+
+  flashBurst() {
+    if (!this.context || !this.noiseBuffer) return;
+    const now = this.context.currentTime;
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    const capacitor = this.context.createOscillator();
+    const capacitorGain = this.context.createGain();
+    source.buffer = this.noiseBuffer;
+    source.playbackRate.value = 2.6;
+    filter.type = 'highpass';
+    filter.frequency.value = 1600;
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+    capacitor.type = 'sine';
+    capacitor.frequency.setValueAtTime(2100, now + 0.04);
+    capacitor.frequency.exponentialRampToValueAtTime(480, now + 0.24);
+    capacitorGain.gain.setValueAtTime(0.055, now + 0.04);
+    capacitorGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+    source.connect(filter).connect(gain).connect(this.master);
+    capacitor.connect(capacitorGain).connect(this.master);
+    source.start(now, Math.random() * 1.2, 0.13);
+    source.stop(now + 0.14);
+    capacitor.start(now + 0.04);
+    capacitor.stop(now + 0.27);
+  }
+
+  archivePickup() {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    for (const [index, frequency] of [880, 660, 440].entries()) {
+      const oscillator = this.context.createOscillator();
+      const gain = this.context.createGain();
+      oscillator.type = index === 1 ? 'square' : 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, now + index * 0.045);
+      gain.gain.exponentialRampToValueAtTime(0.035, now + index * 0.045 + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.045 + 0.13);
+      oscillator.connect(gain).connect(this.master);
+      oscillator.start(now + index * 0.045);
+      oscillator.stop(now + index * 0.045 + 0.15);
+    }
+  }
+
+  phantomStep(pan = 0, heavy = false) {
+    this.monsterStep(pan, heavy ? 7 : 12, heavy);
+  }
+
+  ambientCue(cue, pan = 0, intensity = 0.7) {
+    if (!this.context) return;
+    const name = String(cue || 'distant-knock');
+    const now = this.context.currentTime;
+    const panner = this.context.createStereoPanner();
+    const gain = this.context.createGain();
+    panner.pan.value = clamp(pan, -1, 1);
+    const amount = clamp(intensity, 0, 1);
+    if (/ring|bell/.test(name)) {
+      const oscillator = this.context.createOscillator();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(name.includes('shift') ? 620 : 780, now);
+      oscillator.frequency.exponentialRampToValueAtTime(name.includes('shift') ? 410 : 520, now + 0.72);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.065 * amount, now + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+      oscillator.connect(panner).connect(gain).connect(this.master);
+      oscillator.start(now);
+      oscillator.stop(now + 1.3);
+      return;
+    }
+    if (/splash|water|drain|steam|breath/.test(name) && this.noiseBuffer) {
+      const source = this.context.createBufferSource();
+      const filter = this.context.createBiquadFilter();
+      source.buffer = this.noiseBuffer;
+      source.playbackRate.value = name.includes('splash') ? 0.72 : 0.3;
+      filter.type = 'bandpass';
+      filter.frequency.value = name.includes('steam') ? 980 : name.includes('splash') ? 420 : 150;
+      filter.Q.value = 1.7;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.095 * amount, now + 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+      source.connect(filter).connect(panner).connect(gain).connect(this.master);
+      source.start(now, Math.random() * 1.1, 1);
+      source.stop(now + 1.02);
+      return;
+    }
+    const oscillator = this.context.createOscillator();
+    oscillator.type = /relay|ballast|fluorescent/.test(name) ? 'square' : 'triangle';
+    oscillator.frequency.setValueAtTime(/pipe|knock/.test(name) ? 118 : 210, now);
+    oscillator.frequency.exponentialRampToValueAtTime(42, now + 0.24);
+    gain.gain.setValueAtTime(0.11 * amount, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
+    oscillator.connect(panner).connect(gain).connect(this.master);
+    oscillator.start(now);
+    oscillator.stop(now + 0.34);
   }
 
   drip(pan) {
@@ -744,17 +949,157 @@ function buildObjectiveModel(type, color) {
   return group;
 }
 
-function buildEnvironmentProps(level, maze, random, mobile) {
+function buildEvidenceModel(color = 0xb83426) {
+  const group = new THREE.Group();
+  const shell = new THREE.MeshStandardMaterial({ color: 0x171914, roughness: 0.82, metalness: 0.08 });
+  const label = new THREE.MeshStandardMaterial({ color: 0xc8c3a2, roughness: 0.9, metalness: 0 });
+  const reel = new THREE.MeshStandardMaterial({ color: 0x55584f, roughness: 0.5, metalness: 0.28 });
+  const glow = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 2.4,
+    roughness: 0.4,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.07, 0.24), shell);
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+  const sticker = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.012, 0.12), label);
+  sticker.position.y = 0.041;
+  group.add(sticker);
+  for (const x of [-0.075, 0.075]) {
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.016, 12), reel);
+    wheel.position.set(x, 0.052, 0);
+    group.add(wheel);
+  }
+  const indicator = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 6), glow);
+  indicator.position.set(0.155, 0.055, 0.075);
+  group.add(indicator);
+  group.userData.indicator = indicator;
+  return group;
+}
+
+function buildStoryPlacard(text, accent = '#b8bd86') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 144;
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#171811';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = 'rgba(215, 211, 181, 0.52)';
+  context.lineWidth = 5;
+  context.strokeRect(7, 7, canvas.width - 14, canvas.height - 14);
+  context.fillStyle = accent;
+  context.font = '700 30px Courier New';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  const words = String(text || '').split(/\s+/);
+  const lines = [''];
+  for (const word of words) {
+    const current = lines.at(-1);
+    const candidate = current ? `${current} ${word}` : word;
+    if (context.measureText(candidate).width > 450 && lines.length < 2) lines.push(word);
+    else lines[lines.length - 1] = candidate;
+  }
+  const startY = lines.length === 1 ? 74 : 53;
+  lines.forEach((line, index) => context.fillText(line, 256, startY + index * 44));
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const group = new THREE.Group();
+  const backing = new THREE.Mesh(
+    new THREE.BoxGeometry(1.45, 0.43, 0.045),
+    new THREE.MeshStandardMaterial({ color: 0x171811, roughness: 0.78, metalness: 0.14 }),
+  );
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 0.39),
+    new THREE.MeshStandardMaterial({
+      map: texture,
+      emissiveMap: texture,
+      emissive: 0x1a2117,
+      emissiveIntensity: 0.42,
+      roughness: 0.74,
+    }),
+  );
+  face.position.z = 0.025;
+  group.add(backing, face);
+  return group;
+}
+
+function buildEnvironmentProps(
+  level,
+  maze,
+  random,
+  mobile,
+  colliders,
+  protectedCells = new Set(),
+  occupiedCells = new Set(),
+) {
   const group = new THREE.Group();
   const matrix = new THREE.Matrix4();
   const position = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
   const scale = new THREE.Vector3(1, 1, 1);
+  const protectedSet = protectedCells instanceof Set ? protectedCells : new Set(protectedCells);
+  const allCells = Array.from(maze.cells, (_, index) => index)
+    .filter((index) => !protectedSet.has(index));
+
+  const chooseCells = (requestedCount, definition, blocking) => {
+    const chosen = [];
+    const chosenSet = new Set();
+    const cluster = Array.isArray(definition.cluster) ? definition.cluster : [1, 1];
+    const clusterMin = Math.max(1, Math.trunc(Number(cluster[0]) || 1));
+    const clusterMax = Math.max(clusterMin, Math.trunc(Number(cluster[1]) || clusterMin));
+    const available = () => allCells.filter((cellIndex) => (
+      !chosenSet.has(cellIndex) && (!blocking || !occupiedCells.has(cellIndex))
+    ));
+
+    while (chosen.length < requestedCount) {
+      const anchors = available();
+      if (!anchors.length) break;
+      const anchor = anchors[Math.floor(random() * anchors.length)];
+      const anchorCoords = maze.coords(anchor);
+      const clusterCount = Math.min(
+        requestedCount - chosen.length,
+        clusterMin + Math.floor(random() * (clusterMax - clusterMin + 1)),
+      );
+      const nearby = available()
+        .filter((cellIndex) => {
+          const coords = maze.coords(cellIndex);
+          return Math.abs(coords.col - anchorCoords.col) + Math.abs(coords.row - anchorCoords.row) <= 2;
+        })
+        .map((cellIndex) => ({ cellIndex, order: random() }))
+        .sort((left, right) => left.order - right.order);
+      if (!nearby.some(({ cellIndex }) => cellIndex === anchor)) {
+        nearby.unshift({ cellIndex: anchor, order: -1 });
+      }
+      let addedToCluster = 0;
+      for (const { cellIndex } of nearby) {
+        if (chosen.length >= requestedCount || addedToCluster >= clusterCount) break;
+        if (chosenSet.has(cellIndex) || (blocking && occupiedCells.has(cellIndex))) continue;
+        chosen.push(cellIndex);
+        chosenSet.add(cellIndex);
+        if (blocking) occupiedCells.add(cellIndex);
+        addedToCluster += 1;
+      }
+      if (!chosenSet.has(anchor) && chosen.length < requestedCount) {
+        chosen.push(anchor);
+        chosenSet.add(anchor);
+        if (blocking) occupiedCells.add(anchor);
+      }
+    }
+    return chosen;
+  };
 
   for (const definition of level.props) {
-    const count = Math.max(1, Math.floor(maze.cells.length * definition.density * (mobile ? 0.55 : 1)));
+    const requestedCount = Math.floor(maze.cells.length * definition.density * (mobile ? 0.55 : 1));
+    if (requestedCount <= 0) continue;
+    const blocking = ['square-column', 'service-crate', 'discarded-chair', 'oil-drum'].includes(definition.type);
+    const placementCells = chooseCells(requestedCount, definition, blocking);
+    if (!placementCells.length) continue;
+    const count = placementCells.length;
     let geometry;
     let material;
+    const materialColor = definition.accent === undefined ? definition.color : 0xffffff;
 
     if (definition.type === 'wall-pipe' || definition.type === 'hanging-chain') {
       geometry = new THREE.CylinderGeometry(
@@ -763,11 +1108,11 @@ function buildEnvironmentProps(level, maze, random, mobile) {
         definition.type === 'hanging-chain' ? 1.6 : 2.8,
         8,
       );
-      material = new THREE.MeshStandardMaterial({ color: definition.color, roughness: 0.68, metalness: 0.42 });
+      material = new THREE.MeshStandardMaterial({ color: materialColor, roughness: 0.68, metalness: 0.42 });
     } else if (definition.type === 'standing-water') {
       geometry = new THREE.CircleGeometry(1, 20);
       material = new THREE.MeshPhysicalMaterial({
-        color: definition.color,
+        color: materialColor,
         roughness: 0.18,
         metalness: 0.04,
         transparent: true,
@@ -777,12 +1122,20 @@ function buildEnvironmentProps(level, maze, random, mobile) {
       });
     } else if (definition.type === 'ceiling-vent' || definition.type === 'cable-tray' || definition.type === 'drain-grate') {
       geometry = new THREE.BoxGeometry(1, 0.045, definition.type === 'cable-tray' ? 0.24 : 0.72);
-      material = new THREE.MeshStandardMaterial({ color: definition.color, roughness: 0.74, metalness: 0.32 });
+      material = new THREE.MeshStandardMaterial({ color: materialColor, roughness: 0.74, metalness: 0.32 });
+    } else if (definition.type === 'square-column' || definition.type === 'service-crate' || definition.type === 'discarded-chair') {
+      geometry = new THREE.BoxGeometry(1, 1, 1);
+      material = new THREE.MeshStandardMaterial({ color: materialColor, roughness: 0.82, metalness: 0.08 });
+    } else if (definition.type === 'oil-drum') {
+      geometry = new THREE.CylinderGeometry(0.31, 0.31, 0.86, 14);
+      material = new THREE.MeshStandardMaterial({ color: materialColor, roughness: 0.66, metalness: 0.34 });
     } else continue;
 
     const instances = new THREE.InstancedMesh(geometry, material, count);
     for (let i = 0; i < count; i += 1) {
-      const cell = maze.cellToWorld(Math.floor(random() * maze.cells.length));
+      const cellIndex = placementCells[i];
+      const cell = maze.cellToWorld(cellIndex);
+      let colliderSize = null;
       if (definition.type === 'wall-pipe') {
         position.set(cell.x + (random() - 0.5) * 1.5, WALL_HEIGHT - 0.42, cell.z + (random() - 0.5) * 1.5);
         quaternion.setFromEuler(new THREE.Euler(random() > 0.5 ? Math.PI / 2 : 0, 0, random() > 0.5 ? Math.PI / 2 : 0));
@@ -798,6 +1151,30 @@ function buildEnvironmentProps(level, maze, random, mobile) {
         position.set(cell.x + (random() - 0.5) * 1.5, 0.025, cell.z + (random() - 0.5) * 1.5);
         quaternion.identity();
         scale.set(0.68, 1, 0.68);
+      } else if (definition.type === 'square-column') {
+        const columnAngle = random() * Math.PI * 2;
+        position.set(
+          cell.x + Math.cos(columnAngle) * 0.82,
+          WALL_HEIGHT / 2,
+          cell.z + Math.sin(columnAngle) * 0.82,
+        );
+        quaternion.identity();
+        scale.set(0.46, WALL_HEIGHT, 0.46);
+        colliderSize = { x: 0.46, z: 0.46 };
+      } else if (definition.type === 'service-crate') {
+        position.set(cell.x + (random() > 0.5 ? 1.25 : -1.25), 0.36, cell.z + (random() - 0.5) * 0.9);
+        quaternion.setFromEuler(new THREE.Euler(0, random() * Math.PI, 0));
+        scale.set(0.74, 0.72, 0.74);
+        colliderSize = { x: 0.74, z: 0.74 };
+      } else if (definition.type === 'oil-drum') {
+        position.set(cell.x + (random() > 0.5 ? 1.2 : -1.2), 0.43, cell.z + (random() - 0.5) * 0.8);
+        quaternion.identity();
+        colliderSize = { x: 0.62, z: 0.62 };
+      } else if (definition.type === 'discarded-chair') {
+        position.set(cell.x + (random() - 0.5) * 1.4, 0.3, cell.z + (random() - 0.5) * 1.4);
+        quaternion.setFromEuler(new THREE.Euler(0.12, random() * Math.PI, random() * 0.2 - 0.1));
+        scale.set(0.48, 0.6, 0.48);
+        colliderSize = { x: 0.48, z: 0.48 };
       } else {
         position.set(cell.x + (random() - 0.5), WALL_HEIGHT - 0.08, cell.z + (random() - 0.5));
         quaternion.identity();
@@ -805,13 +1182,26 @@ function buildEnvironmentProps(level, maze, random, mobile) {
       }
       matrix.compose(position, quaternion, scale);
       instances.setMatrixAt(i, matrix);
+      if (definition.accent !== undefined) {
+        instances.setColorAt(i, new THREE.Color(random() < 0.34 ? definition.accent : definition.color));
+      }
+      if (colliderSize) {
+        colliders.push({
+          minX: position.x - colliderSize.x / 2,
+          maxX: position.x + colliderSize.x / 2,
+          minZ: position.z - colliderSize.z / 2,
+          maxZ: position.z + colliderSize.z / 2,
+        });
+      }
       scale.set(1, 1, 1);
     }
     instances.instanceMatrix.needsUpdate = true;
+    if (instances.instanceColor) instances.instanceColor.needsUpdate = true;
     instances.castShadow = definition.type !== 'standing-water';
     instances.receiveShadow = true;
     group.add(instances);
   }
+  group.userData.occupiedCells = occupiedCells;
   return group;
 }
 
@@ -831,14 +1221,19 @@ async function init() {
   }
 
   const query = new URLSearchParams(window.location.search);
-  const qaMode = query.has('qa');
+  const qaMode = query.has('qa') && !query.has('room');
   const qaAutowalk = query.has('autowalk');
-  const qaComplete = query.has('complete');
+  const qaComplete = qaMode && query.has('complete');
+  const qaMonsterMode = qaMode ? query.get('monster') : null;
+  const qaShadow = qaMode && query.has('shadow');
   const levelIndex = getLevelIndex(query);
   const level = LEVELS[levelIndex];
+  const requestedCharacterId = String(query.get('character') || '').trim();
+  const localCharacterId = characterCatalog.has(requestedCharacterId) ? requestedCharacterId : '';
   const mobile = query.has('touch') || window.matchMedia('(pointer: coarse)').matches;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const mazeSize = mobile ? level.maze.mobile : level.maze.desktop;
+  const multiplayerRequested = query.has('room') || query.get('layout') === 'shared';
+  const mazeSize = multiplayerRequested ? level.maze.desktop : mobile ? level.maze.mobile : level.maze.desktop;
   const cols = mazeSize.cols;
   const rows = mazeSize.rows;
   let campaignSeed = Number(sessionStorage.getItem('threshold-campaign-seed'));
@@ -848,10 +1243,19 @@ async function init() {
   }
   const seed = (campaignSeed ^ level.maze.seedSalt) >>> 0;
   const random = mulberry32(seed ^ 0x9e3779b9);
+  const cosmeticRandom = mulberry32(seed ^ 0x6d2b79f5);
+  const propRandom = mulberry32(seed ^ 0xa511e9b3);
+  const fixtureRandom = mulberry32(seed ^ 0x63d83595);
+  const objectiveRandom = mulberry32(seed ^ 0xc2b2ae35);
+  const evidenceRandom = mulberry32(seed ^ 0x27d4eb2f);
+  const atmosphereDirector = createAtmosphereDirector(level.atmosphere || {}, {
+    seed: seed ^ 0x0a7f3d1,
+  });
   const maze = new Maze(cols, rows, seed, {
     loopRatio: level.maze.loopRatio,
     roomDivisor: level.maze.roomDivisor,
     minRooms: level.maze.minimumRooms,
+    roomSize: level.maze.roomSize,
   });
 
   dom.classification.textContent = level.copy.classification;
@@ -864,6 +1268,8 @@ async function init() {
   dom.enterLabel.textContent = level.copy.start.button;
   dom.game.setAttribute('aria-label', `${level.copy.classification} first-person horror game`);
   dom.game.dataset.level = String(levelIndex);
+  dom.game.dataset.character = localCharacterId || 'auto';
+  dom.game.dataset.seed = String(seed);
   document.title = `${level.name.toUpperCase()} / THRESHOLD`;
   document.documentElement.style.setProperty('--sick', new THREE.Color(level.objective.color).getStyle());
   const startIndex = maze.index(Math.floor(cols / 2), Math.floor(rows / 2));
@@ -873,6 +1279,57 @@ async function init() {
     if (maze.cells[i] !== 0 && exitDistances[i] > exitDistances[exitIndex]) exitIndex = i;
   }
   const startPosition = maze.cellToWorld(startIndex);
+
+  // Plan required shared content before optional clutter. This guarantees that
+  // even a dense contributed prop profile cannot erase objectives or archives.
+  const fixtureStates = [];
+  const activeFixtures = [];
+  const deadFixtures = [];
+  const startFixtureCoords = maze.coords(startIndex);
+  for (let i = 0; i < maze.cells.length; i += 1) {
+    const fixtureCoords = maze.coords(i);
+    const qaBroken = qaShadow
+      && Math.abs(fixtureCoords.col - startFixtureCoords.col)
+        + Math.abs(fixtureCoords.row - startFixtureCoords.row) <= 1;
+    const broken = qaBroken || (i !== startIndex && fixtureRandom() < level.lighting.fixture.brokenChance);
+    fixtureStates[i] = { broken, phase: fixtureRandom() * Math.PI * 2 };
+    (broken ? deadFixtures : activeFixtures).push(i);
+  }
+
+  const exitDistance = exitDistances[exitIndex];
+  const allContentCandidates = enumerateCellIndexes(maze.cells)
+    .filter((index) => index !== startIndex && index !== exitIndex);
+  const objectiveFallbackCells = allContentCandidates.filter((index) => (
+    DIRECTIONS.some((direction) => maze.hasWall(index, direction.bit))
+  ));
+  const preferredObjectiveCells = objectiveFallbackCells.filter((index) => (
+    maze.cells[index] !== 0
+    && !fixtureStates[index].broken
+    && exitDistances[index] >= 6
+    && exitDistances[index] <= Math.max(7, exitDistance - 3)
+  ));
+  const objectiveCellPlan = chooseSpacedCells(
+    preferredObjectiveCells,
+    objectiveFallbackCells,
+    level.objective.count,
+    objectiveRandom,
+    CELL_SIZE * 3.2,
+    (left, right) => maze.cellToWorld(left).distanceTo(maze.cellToWorld(right)),
+  );
+  const objectiveCellPlanSet = new Set(objectiveCellPlan);
+  const evidenceFallbackCells = allContentCandidates.filter((index) => !objectiveCellPlanSet.has(index));
+  const preferredEvidenceCells = evidenceFallbackCells.filter((index) => (
+    maze.cells[index] !== 0 && exitDistances[index] >= 4
+  ));
+  const evidenceEntries = Array.isArray(level.evidence?.entries) ? level.evidence.entries : [];
+  const evidenceCellPlan = chooseSpacedCells(
+    preferredEvidenceCells,
+    evidenceFallbackCells,
+    evidenceEntries.length,
+    evidenceRandom,
+    CELL_SIZE * 4.2,
+    (left, right) => maze.cellToWorld(left).distanceTo(maze.cellToWorld(right)),
+  );
 
   const scene = new THREE.Scene();
   const fogColor = new THREE.Color(level.fog.color);
@@ -1005,10 +1462,10 @@ async function init() {
   const stains = new THREE.InstancedMesh(stainGeometry, stainMaterial, mobile ? 10 : 22);
   const floorQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
   for (let i = 0; i < stains.count; i += 1) {
-    const cell = Math.floor(random() * maze.cells.length);
+    const cell = Math.floor(cosmeticRandom() * maze.cells.length);
     const center = maze.cellToWorld(cell);
-    position.set(center.x + (random() - 0.5) * 2.1, 0.012, center.z + (random() - 0.5) * 2.1);
-    scale.set(0.35 + random() * 1.45, 0.2 + random() * 0.8, 1);
+    position.set(center.x + (cosmeticRandom() - 0.5) * 2.1, 0.012, center.z + (cosmeticRandom() - 0.5) * 2.1);
+    scale.set(0.35 + cosmeticRandom() * 1.45, 0.2 + cosmeticRandom() * 0.8, 1);
     matrix.compose(position, floorQuaternion, scale);
     stains.setMatrixAt(i, matrix);
   }
@@ -1020,11 +1477,11 @@ async function init() {
   const grimeContext = grimeCanvas.getContext('2d');
   grimeContext.clearRect(0, 0, 128, 128);
   for (let i = 0; i < 6; i += 1) {
-    const centerX = 28 + random() * 72;
-    const centerY = 28 + random() * 72;
-    const radius = 12 + random() * 34;
+    const centerX = 28 + cosmeticRandom() * 72;
+    const centerY = 28 + cosmeticRandom() * 72;
+    const radius = 12 + cosmeticRandom() * 34;
     const gradient = grimeContext.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
-    gradient.addColorStop(0, `rgba(255,255,255,${0.3 + random() * 0.38})`);
+    gradient.addColorStop(0, `rgba(255,255,255,${0.3 + cosmeticRandom() * 0.38})`);
     gradient.addColorStop(1, 'rgba(255,255,255,0)');
     grimeContext.fillStyle = gradient;
     grimeContext.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
@@ -1035,7 +1492,7 @@ async function init() {
     new THREE.MeshStandardMaterial({
       alphaMap: grimeTexture,
       color: rgbInt(level.surfaces.wall.grime),
-      opacity: levelIndex === 2 ? 0.27 : 0.19,
+      opacity: level.surfaces.wall.grimeOpacity ?? 0.19,
       transparent: true,
       depthWrite: false,
       roughness: 1,
@@ -1044,29 +1501,82 @@ async function init() {
     mobile ? 12 : 28,
   );
   for (let i = 0; i < wallGrime.count; i += 1) {
-    const segment = segments[Math.floor(random() * segments.length)];
-    const side = random() > 0.5 ? 1 : -1;
+    const segment = segments[Math.floor(cosmeticRandom() * segments.length)];
+    const side = cosmeticRandom() > 0.5 ? 1 : -1;
     position.set(
-      segment.x + (segment.horizontal ? (random() - 0.5) * 2.2 : side * (WALL_THICKNESS / 2 + 0.004)),
-      0.48 + random() * 1.55,
-      segment.z + (segment.horizontal ? side * (WALL_THICKNESS / 2 + 0.004) : (random() - 0.5) * 2.2),
+      segment.x + (segment.horizontal ? (cosmeticRandom() - 0.5) * 2.2 : side * (WALL_THICKNESS / 2 + 0.004)),
+      0.48 + cosmeticRandom() * 1.55,
+      segment.z + (segment.horizontal ? side * (WALL_THICKNESS / 2 + 0.004) : (cosmeticRandom() - 0.5) * 2.2),
     );
     quaternion.setFromEuler(new THREE.Euler(0, segment.horizontal ? 0 : Math.PI / 2, 0));
-    scale.set(0.42 + random() * 1.18, 0.22 + random() * 0.72, 1);
+    scale.set(0.42 + cosmeticRandom() * 1.18, 0.22 + cosmeticRandom() * 0.72, 1);
     matrix.compose(position, quaternion, scale);
     wallGrime.setMatrixAt(i, matrix);
   }
   wallGrime.instanceMatrix.needsUpdate = true;
   scene.add(wallGrime);
-  scene.add(buildEnvironmentProps(level, maze, random, mobile));
-
-  const fixtureStates = [];
-  const activeFixtures = [];
-  const deadFixtures = [];
-  for (let i = 0; i < maze.cells.length; i += 1) {
-    const broken = i === startIndex ? false : random() < level.lighting.fixture.brokenChance;
-    fixtureStates[i] = { broken, phase: random() * Math.PI * 2 };
-    (broken ? deadFixtures : activeFixtures).push(i);
+  const propOccupiedCells = new Set();
+  scene.add(buildEnvironmentProps(
+    level,
+    maze,
+    propRandom,
+    multiplayerRequested ? false : mobile,
+    colliders,
+    new Set([startIndex, exitIndex, ...objectiveCellPlan, ...evidenceCellPlan]),
+    propOccupiedCells,
+  ));
+  const storyFragments = level.atmosphere?.environmentalStory || [];
+  for (const fragment of storyFragments) {
+    const count = Math.floor(
+      maze.cells.length * Math.max(0, Number(fragment.density) || 0) * (mobile ? 0.55 : 1),
+    );
+    if (count <= 0) continue;
+    for (let i = 0; i < count; i += 1) {
+      const placement = String(fragment.placement || 'wall');
+      if (placement === 'objective') continue;
+      const placard = buildStoryPlacard(
+        fragment.text,
+        new THREE.Color(level.objective.color).getStyle(),
+      );
+      if (placement === 'floor' || placement === 'fixture') {
+        const cellIndex = Math.floor(cosmeticRandom() * maze.cells.length);
+        const center = maze.cellToWorld(cellIndex);
+        placard.position.set(
+          center.x + (cosmeticRandom() - 0.5) * 1.1,
+          placement === 'floor' ? 0.055 : WALL_HEIGHT - 0.065,
+          center.z + (cosmeticRandom() - 0.5) * 1.1,
+        );
+        placard.rotation.x = placement === 'floor' ? -Math.PI / 2 : Math.PI / 2;
+        placard.rotation.z = cosmeticRandom() * Math.PI * 2;
+      } else {
+        let segment = segments[Math.floor(cosmeticRandom() * segments.length)];
+        if (placement === 'exit' || placement === 'objective') {
+          const targetCell = placement === 'exit'
+            ? exitIndex
+            : Math.floor(cosmeticRandom() * maze.cells.length);
+          const target = maze.cellToWorld(targetCell);
+          segment = segments.reduce((nearest, candidate) => {
+            if (!nearest) return candidate;
+            const nearestDistance = (nearest.x - target.x) ** 2 + (nearest.z - target.z) ** 2;
+            const candidateDistance = (candidate.x - target.x) ** 2 + (candidate.z - target.z) ** 2;
+            return candidateDistance < nearestDistance ? candidate : nearest;
+          }, null);
+        }
+        if (!segment) continue;
+        let side = cosmeticRandom() > 0.5 ? 1 : -1;
+        if (segment.horizontal && Math.abs(segment.z + side * 0.2) > worldDepth / 2 - 0.1) side *= -1;
+        if (!segment.horizontal && Math.abs(segment.x + side * 0.2) > worldWidth / 2 - 0.1) side *= -1;
+        placard.position.set(
+          segment.x + (segment.horizontal ? (cosmeticRandom() - 0.5) * Math.max(0.2, CELL_SIZE - 1.8) : side * 0.12),
+          1.42 + (cosmeticRandom() - 0.5) * 0.42,
+          segment.z + (segment.horizontal ? side * 0.12 : (cosmeticRandom() - 0.5) * Math.max(0.2, CELL_SIZE - 1.8)),
+        );
+        placard.rotation.y = segment.horizontal
+          ? (side > 0 ? 0 : Math.PI)
+          : (side > 0 ? Math.PI / 2 : -Math.PI / 2);
+      }
+      scene.add(placard);
+    }
   }
 
   const panelGeometry = new THREE.BoxGeometry(1.62, 0.035, 0.44);
@@ -1141,6 +1651,37 @@ async function init() {
     lightPool.push(light);
   }
 
+  const flashlightProfile = level.equipment?.flashlight || {};
+  const flashlightTarget = new THREE.Object3D();
+  flashlightTarget.position.set(0, -0.04, -1);
+  const playerFlashlight = new THREE.SpotLight(
+    flashlightProfile.color ?? level.lighting.fixture.color,
+    flashlightProfile.intensity ?? (mobile ? 38 : 52),
+    flashlightProfile.distance ?? 18,
+    flashlightProfile.angle ?? 0.42,
+    flashlightProfile.penumbra ?? 0.72,
+    1.7,
+  );
+  playerFlashlight.position.set(0.12, -0.08, -0.08);
+  playerFlashlight.target = flashlightTarget;
+  playerFlashlight.castShadow = false;
+  const flashlightBounce = new THREE.PointLight(
+    flashlightProfile.color ?? level.lighting.fixture.color,
+    1.25,
+    3.2,
+    2,
+  );
+  flashlightBounce.position.set(0, -0.1, -0.2);
+  camera.add(playerFlashlight, flashlightTarget, flashlightBounce);
+  const remoteFlashLight = new THREE.PointLight(
+    flashlightProfile.color ?? level.lighting.fixture.color,
+    0,
+    13,
+    2,
+  );
+  remoteFlashLight.visible = false;
+  scene.add(remoteFlashLight);
+
   const exitCell = maze.cellToWorld(exitIndex);
   const exitGroup = new THREE.Group();
   const exitWalls = DIRECTIONS.filter((direction) => maze.hasWall(exitIndex, direction.bit));
@@ -1196,7 +1737,7 @@ async function init() {
   signContext.font = '700 40px Arial';
   signContext.textAlign = 'center';
   signContext.textBaseline = 'middle';
-  signContext.fillText(levelIndex === 1 ? 'LIFT' : levelIndex === 2 ? 'HATCH' : 'EXIT', signCanvas.width / 2, signCanvas.height / 2 + 2);
+  signContext.fillText(level.exit?.label || 'EXIT', signCanvas.width / 2, signCanvas.height / 2 + 2);
   const signTexture = new THREE.CanvasTexture(signCanvas);
   signTexture.colorSpace = THREE.SRGBColorSpace;
   signTexture.anisotropy = anisotropy;
@@ -1223,36 +1764,10 @@ async function init() {
 
   const objectiveItems = [];
   if (level.objective.count > 0) {
-    const candidateCells = [];
-    const exitDistance = exitDistances[exitIndex];
-    for (let i = 0; i < maze.cells.length; i += 1) {
-      if (
-        i !== startIndex
-        && i !== exitIndex
-        && maze.cells[i] !== 0
-        && !fixtureStates[i].broken
-        && exitDistances[i] >= 6
-        && exitDistances[i] <= Math.max(7, exitDistance - 3)
-      ) candidateCells.push(i);
-    }
-    candidateCells.sort(() => random() - 0.5);
-    const selectedCells = [];
-    for (const candidate of candidateCells) {
-      const candidateWorld = maze.cellToWorld(candidate);
-      if (selectedCells.every((cell) => candidateWorld.distanceTo(maze.cellToWorld(cell)) > CELL_SIZE * 3.2)) {
-        selectedCells.push(candidate);
-        if (selectedCells.length === level.objective.count) break;
-      }
-    }
-    for (const candidate of candidateCells) {
-      if (selectedCells.length === level.objective.count) break;
-      if (!selectedCells.includes(candidate)) selectedCells.push(candidate);
-    }
-
-    for (const cellIndex of selectedCells) {
+    for (const cellIndex of objectiveCellPlan) {
       const cellCenter = maze.cellToWorld(cellIndex);
       const wallsInCell = DIRECTIONS.filter((direction) => maze.hasWall(cellIndex, direction.bit));
-      const wall = wallsInCell[Math.floor(random() * wallsInCell.length)] || DIRECTIONS[0];
+      const wall = wallsInCell[Math.floor(objectiveRandom() * wallsInCell.length)] || DIRECTIONS[0];
       const model = buildObjectiveModel(level.objective.type, level.objective.color);
       const mountOffset = CELL_SIZE / 2 - 0.14;
       model.position.set(
@@ -1274,14 +1789,106 @@ async function init() {
     }
   }
   const objectiveTotal = objectiveItems.length;
+  for (const fragment of storyFragments.filter((entry) => entry.placement === 'objective')) {
+    if (!objectiveItems.length) break;
+    const count = Math.floor(
+      maze.cells.length * Math.max(0, Number(fragment.density) || 0) * (mobile ? 0.55 : 1),
+    );
+    if (count <= 0) continue;
+    for (let index = 0; index < Math.min(count, objectiveItems.length); index += 1) {
+      const objective = objectiveItems[index % objectiveItems.length];
+      const placard = buildStoryPlacard(
+        fragment.text,
+        new THREE.Color(level.objective.color).getStyle(),
+      );
+      placard.position.copy(objective.position);
+      placard.position.y = 1.92;
+      placard.rotation.y = objective.rotation.y;
+      scene.add(placard);
+    }
+  }
   if (objectiveTotal === 0) exitSign.material.emissiveIntensity = 2.8;
   dom.game.dataset.objectiveTotal = String(objectiveTotal);
+  dom.game.dataset.exitCell = String(exitIndex);
+  dom.game.dataset.monsterMode = 'hidden';
+
+  const evidenceItems = evidenceCellPlan.map((cellIndex, index) => {
+    const center = maze.cellToWorld(cellIndex);
+    const model = buildEvidenceModel(level.objective.color);
+    model.position.set(
+      center.x + (evidenceRandom() - 0.5) * 1.15,
+      0.095,
+      center.z + (evidenceRandom() - 0.5) * 1.15,
+    );
+    model.rotation.y = evidenceRandom() * Math.PI * 2;
+    model.userData.cellIndex = cellIndex;
+    model.userData.evidenceIndex = index;
+    model.userData.collected = false;
+    model.userData.baseY = model.position.y;
+    scene.add(model);
+    return model;
+  });
+  let evidenceCollected = 0;
+  dom.evidenceState.textContent = `ARCHIVE 0/${evidenceItems.length}`;
+  dom.evidenceState.hidden = evidenceItems.length === 0;
+  dom.game.dataset.evidence = '0';
+
+  const protectedIncidentCells = [
+    startIndex,
+    exitIndex,
+    ...objectiveItems.map((item) => item.userData.cellIndex),
+    ...evidenceItems.map((item) => item.userData.cellIndex),
+    ...propOccupiedCells,
+  ];
+  const incidentMobile = mobile && !multiplayerRequested;
+  const incidentProfile = level.incidents || {};
+  const incidentPlan = planIncidents({
+    density: incidentProfile.density,
+    minCount: incidentProfile.minCount,
+    maxCount: incidentProfile.maxCount,
+    minCellDistance: incidentProfile.minCellDistance,
+    weights: incidentProfile.weights,
+    types: incidentProfile.types,
+    seed: seed ^ 0x1ac1de17,
+    candidateCells: Array.from(maze.cells, (cell, cellIndex) => ({
+      cellIndex,
+      ...maze.coords(cellIndex),
+    })).filter(({ cellIndex }) => exitDistances[cellIndex] >= 3),
+    protectedCells: protectedIncidentCells,
+    columns: cols,
+    mobile: incidentMobile,
+  });
+  const incidentGroup = buildIncidentGroup(THREE, incidentPlan, {
+    cellToWorld: (cellIndex) => maze.cellToWorld(cellIndex),
+    mobile: incidentMobile,
+    palette: level.incidents?.palette,
+  });
+  for (const incident of incidentGroup.children) {
+    incident.userData.baseY = incident.position.y;
+    if (!['collapsed-wanderer', 'abandoned-pack', 'chair-pile'].includes(incident.userData.incidentType)) {
+      continue;
+    }
+    const radius = incident.userData.incidentType === 'chair-pile' ? 0.7 : 0.52;
+    colliders.push({
+      minX: incident.position.x - radius,
+      maxX: incident.position.x + radius,
+      minZ: incident.position.z - radius,
+      maxZ: incident.position.z + radius,
+    });
+  }
+  scene.add(incidentGroup);
+  dom.game.dataset.incidents = String(incidentPlan.length);
 
   const entity = buildMonster(THREE, {
     name: level.monster.name,
+    identity: level.monster.identity,
+    presentation: level.monster.presentation,
+    sound: level.monster.sound,
     height: 2.46 * level.monster.skin.scale,
     skinColor: level.monster.skin.body,
     eyeColor: level.monster.skin.eye || level.monster.skin.accent,
+    mouthColor: level.monster.skin.type === 'faceless-shadow' ? level.monster.skin.body : 0x020202,
+    toothColor: level.monster.skin.type === 'faceless-shadow' ? level.monster.skin.body : level.monster.skin.accent,
     eyeGlow: Boolean(level.monster.skin.eye),
     eyeIntensity: level.monster.skin.emissiveIntensity,
     detail: mobile ? 'low' : 'medium',
@@ -1290,7 +1897,77 @@ async function init() {
   entity.visible = false;
   scene.add(entity);
 
-  const audio = new AudioEngine({ ...level.audio, drips: levelIndex === 2 });
+  const remotePlayers = createRemotePlayerManager(THREE, scene, {
+    castShadow: !mobile,
+    receiveShadow: true,
+    nameTags: true,
+    flashlights: true,
+    avatarScale: 1,
+  });
+  const waitingRoomPreview = createWaitingRoomPreview(THREE, {
+    renderer,
+    slotsElement: dom.waitingSlots,
+    reducedMotion,
+  });
+  let lastVoiceErrorAt = 0;
+  const multiplayer = createMultiplayerClient({
+    url: query.get('server') || undefined,
+    autoReconnect: true,
+    expectedLevelIds: LEVEL_IDS,
+    expectedContentFingerprint: GAME_CONTENT_FINGERPRINT,
+  });
+  const voiceChat = createVoiceChat({
+    iceServers: import.meta.env.VITE_VOICE_ICE_SERVERS || [],
+    sendSignal: (playerId, signal) => multiplayer.sendVoiceSignal(playerId, signal),
+    onStateChange: (state) => updateVoiceUi(state),
+    onError: () => {
+      const timestamp = performance.now();
+      if (multiplayerActive && timestamp - lastVoiceErrorAt > 2_500) {
+        lastVoiceErrorAt = timestamp;
+        showMessage('VOICE SIGNAL DEGRADED', 0.65);
+      }
+    },
+  });
+  const requestedRoomCode = normalizeRoomCode(query.get('room'));
+  const defaultCallsign = `RECORDER ${String(10 + Math.floor(Math.random() * 90))}`;
+  let localCallsign = normalizeCallsign(localStorage.getItem('threshold-callsign')) || defaultCallsign;
+  let localLook = survivorLook(localStorage.getItem('threshold-survivor-look')).id;
+  let localReady = false;
+  let sessionStarted = false;
+  let waitingAction = 'ready';
+  let sessionStartPending = false;
+  let lobbyBusy = false;
+  let lobbyMode = requestedRoomCode ? 'join' : 'solo';
+  let roomIsPublic = true;
+  let directoryRequestGeneration = 0;
+  let multiplayerActive = false;
+  let localAlive = true;
+  let networkMonsterState = null;
+  let networkMonsterReceivedAt = 0;
+  let networkMonsterInitialized = false;
+  let networkMonsterWasVisible = false;
+  let networkMonsterPreviousMode = 'hidden';
+  let networkMonsterStepDistance = 0;
+  let monsterPublishPending = false;
+  let monsterPublishSignature = '';
+  let monsterPublishSucceededAt = 0;
+  let lastPlayerNetworkUpdate = 0;
+  let lastMonsterNetworkUpdate = 0;
+  let lastRoomRosterUpdate = 0;
+  let lastKillIntentAt = 0;
+  let roomNavigationPending = false;
+  const remoteNetworkPlayers = new Map();
+  const remoteFlashCooldowns = new Map();
+  const remoteInteractionStarts = new Map();
+  const killedRemotePlayers = new Set();
+  const pendingRemoteKills = new Set();
+  dom.playerName.value = localCallsign;
+  dom.roomCode.value = requestedRoomCode;
+
+  const audio = new AudioEngine({
+    ...level.audio,
+    monsterSound: level.monster.sound,
+  });
   audio.setMuted(localStorage.getItem('threshold-muted') === '1');
   dom.soundToggle.textContent = audio.muted ? 'SOUND OFF' : 'SOUND ON';
   const keys = new Set();
@@ -1304,31 +1981,64 @@ async function init() {
   const up = new THREE.Vector3(0, 1, 0);
   const entityVector = new THREE.Vector3();
   const entityTarget = new THREE.Vector3();
-  const entityPreviousPosition = new THREE.Vector3();
   const clock = new THREE.Clock();
 
   let gameState = 'start';
   let ending = false;
+  let levelCompletionPending = false;
   let elapsed = 0;
   let accumulator = 0;
   let stamina = 1;
+  const batteryStorageKey = `threshold-battery-${campaignSeed}`;
+  const storedBatteryRaw = sessionStorage.getItem(batteryStorageKey);
+  const storedBattery = Number(storedBatteryRaw);
+  let flashlightCharge = storedBatteryRaw !== null && Number.isFinite(storedBattery)
+    ? clamp(storedBattery, 0, 1)
+    : 0.82;
+  let flashlightOn = flashlightCharge > 0.02;
+  let flashlightBoostUntil = 0;
+  let flashlightCooldownUntil = 0;
+  let flashWatchUntil = 0;
+  let remoteFlashUntil = 0;
+  let batteryPersistAt = 0;
+  let equipmentHudUpdateAt = 0;
+  let noiseImpulse = 0;
+  let movementNoise = 0;
+  let fear = 0;
+  let playerHidden = false;
+  let hidingSettle = 0;
+  let playerExposure = flashlightOn ? 1 : 0.35;
+  let playerInReliableLight = true;
+  let worldLightReliability = 1;
+  let entityTargetHidden = false;
+  let entityTargetExposure = 1;
+  let entityTargetAwarenessRate = 1;
   let headBob = 0;
   let currentEyeHeight = EYE_HEIGHT;
   let stepDistance = 0;
   let nextScare = randomBetween(level.monster.timing.firstScare, random);
   let nextChase = randomBetween(level.monster.timing.firstChase, random);
   let flickerUntil = 0;
+  let glitchUntil = 0;
   let lightUpdateAt = 0;
   let messageUntil = 0;
+  let messageTimer = null;
   let lastGrainUpdate = 0;
   let touchSprint = false;
+  let touchCrouch = false;
   let nearExit = false;
   let currentInteraction = null;
+  let heldInteraction = null;
+  let interactionHeld = false;
   let objectivesCompleted = 0;
   let playerNoise = 0;
+  let playerCrouching = false;
+  let playerRunning = false;
+  let playerActualSpeed = 0;
   let tension = 0;
   let entityMode = 'hidden';
   let entityUntil = 0;
+  let huntRecoveryUntil = 0;
   let entityPath = [];
   let entityPathIndex = 0;
   let entityPathUpdate = 0;
@@ -1336,10 +2046,20 @@ async function init() {
   let entityLostSight = 0;
   let entityLastKnownCell = startIndex;
   let entityStepDistance = 0;
+  let entityStuckTime = 0;
   let entityCurrentSpeed = 0;
+  let entityActualSpeed = 0;
   let entityPerceptionUpdate = 0;
   let entityCanSeePlayer = false;
+  let entitySightContact = false;
   let entityHeardPlayer = false;
+  let entityAwareness = 0;
+  let entityTargetPlayerId = 'local';
+  let entityTargetPlayerX = playerPosition.x;
+  let entityTargetPlayerZ = playerPosition.y;
+  let entityTargetPlayerNoise = 0;
+  let entityTargetWatched = false;
+  let entityAnimationStart = 0;
   let lastFrame = performance.now();
   let fixedStep = 1 / 120;
   let frameTimeAverage = 1 / 60;
@@ -1367,7 +2087,9 @@ async function init() {
   updateGrain(true);
 
   function showOverlay(kind) {
+    cancelHeldInteraction();
     dom.overlay.classList.add('is-visible');
+    dom.overlay.dataset.mode = kind;
     if (kind === 'pause') {
       dom.overlayKicker.textContent = level.copy.pause.kicker;
       dom.overlayTitle.innerHTML = level.copy.pause.title;
@@ -1396,6 +2118,709 @@ async function init() {
     dom.message.textContent = text;
     dom.message.classList.add('is-visible');
     messageUntil = elapsed + duration;
+    clearTimeout(messageTimer);
+    messageTimer = setTimeout(() => {
+      dom.message.classList.remove('is-visible');
+      dom.message.textContent = '';
+      messageUntil = 0;
+    }, duration * 1000);
+  }
+
+  function setLobbyStatus(text, kind = '') {
+    dom.coopState.textContent = text;
+    dom.coopLobby.classList.toggle('is-error', kind === 'error');
+    dom.coopLobby.classList.toggle('is-connected', kind === 'connected');
+  }
+
+  function voiceAvailable() {
+    return voiceChat.supported && multiplayer.serverCapabilities.includes('voice-signaling');
+  }
+
+  function updateVoiceUi(state = voiceChat.snapshot()) {
+    const available = voiceAvailable();
+    const requesting = state.state === 'requesting';
+    const enabled = Boolean(state.enabled);
+    const blocked = state.state === 'blocked';
+    dom.voiceControls.setAttribute('aria-busy', String(requesting));
+    dom.voiceToggle.disabled = multiplayerActive && !available;
+    dom.voiceToggle.dataset.state = available ? state.state : 'unsupported';
+    dom.voiceToggle.setAttribute('aria-pressed', String(enabled));
+    dom.voiceToggle.textContent = !available
+      ? 'VOICE N/A'
+      : requesting
+        ? 'CANCEL MIC'
+        : blocked
+          ? 'VOICE RETRY'
+          : state.state === 'paused'
+            ? 'VOICE PAUSED'
+            : enabled
+              ? 'VOICE ON'
+              : 'VOICE OFF';
+    dom.voiceToggle.setAttribute(
+      'aria-label',
+      !available
+        ? 'Room voice chat is unavailable'
+        : requesting
+          ? 'Cancel the pending microphone request'
+        : enabled
+          ? 'Disable room voice chat and release the microphone'
+          : blocked
+            ? 'Retry microphone access for room voice chat'
+            : 'Enable room voice chat',
+    );
+
+    dom.micToggle.hidden = !enabled;
+    dom.micToggle.disabled = state.state === 'paused';
+    dom.micToggle.textContent = state.muted ? 'MIC MUTED' : 'MIC LIVE';
+    dom.micToggle.setAttribute('aria-pressed', String(Boolean(state.muted)));
+    dom.micToggle.setAttribute('aria-label', state.muted ? 'Unmute microphone' : 'Mute microphone');
+    const peerText = state.peerCount === 1 ? '1 teammate linked' : `${state.peerCount} teammates linked`;
+    dom.voiceState.textContent = !available
+      ? 'Room voice chat is unavailable on this server or browser.'
+      : requesting
+        ? 'Requesting microphone access.'
+        : blocked
+          ? 'Microphone access was blocked. Activate Voice Retry to try again.'
+          : state.state === 'paused'
+            ? 'Voice chat is paused while this tab is hidden.'
+            : enabled
+              ? `Voice chat on, ${state.muted ? 'microphone muted' : 'microphone live'}, ${peerText}.`
+              : 'Voice chat off.';
+    dom.game.dataset.voice = !available ? 'unsupported' : state.state;
+    dom.game.dataset.voiceMuted = String(Boolean(state.muted));
+    dom.game.dataset.voicePeers = String(state.peerCount || 0);
+  }
+
+  function bindVoiceSession(room = multiplayer.room) {
+    if (!room || !multiplayer.self?.id) return;
+    voiceChat.bindSession({ selfId: multiplayer.self.id, players: room.players || [] });
+    updateVoiceUi();
+  }
+
+  function setLobbyBusy(busy) {
+    lobbyBusy = Boolean(busy);
+    dom.coopLobby.setAttribute('aria-busy', String(Boolean(busy)));
+    dom.coopConnect.disabled = Boolean(busy);
+    dom.modeSolo.disabled = Boolean(busy);
+    dom.modeHost.disabled = Boolean(busy);
+    dom.modeJoin.disabled = Boolean(busy);
+    dom.modeRooms.disabled = Boolean(busy);
+    dom.roomVisibility.disabled = Boolean(busy);
+    for (const button of dom.roomList.querySelectorAll('.room-signal')) {
+      button.disabled = Boolean(busy) || button.dataset.joinable !== 'true';
+    }
+    dom.enterButton.disabled = Boolean(busy) || (!multiplayerActive && lobbyMode !== 'solo');
+    if (multiplayerActive) updateWaitingRoom();
+  }
+
+  function setLobbyMode(mode) {
+    const previousMode = lobbyMode;
+    lobbyMode = ['solo', 'host', 'join', 'rooms'].includes(mode) ? mode : 'solo';
+    const buttons = [
+      [dom.modeSolo, 'solo'],
+      [dom.modeHost, 'host'],
+      [dom.modeJoin, 'join'],
+      [dom.modeRooms, 'rooms'],
+    ];
+    for (const [button, value] of buttons) {
+      const selected = lobbyMode === value;
+      button.classList.toggle('is-selected', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    }
+    dom.coopForm.hidden = lobbyMode === 'solo';
+    dom.coopForm.dataset.mode = lobbyMode;
+    dom.roomCodeField.hidden = lobbyMode !== 'join';
+    dom.roomVisibility.hidden = lobbyMode !== 'host';
+    dom.roomDirectory.hidden = lobbyMode !== 'rooms';
+    dom.coopConnect.textContent = lobbyMode === 'join'
+      ? 'CONNECT'
+      : lobbyMode === 'rooms'
+        ? 'REFRESH'
+        : 'OPEN ROOM';
+    if (previousMode === 'rooms' && lobbyMode !== 'rooms') {
+      directoryRequestGeneration += 1;
+      Promise.resolve(multiplayer.unsubscribeRoomDirectory?.()).catch(() => {});
+    }
+    if (!multiplayerActive) {
+      setLobbyStatus(
+        lobbyMode === 'solo'
+          ? 'SOLO RECORDING'
+          : lobbyMode === 'host'
+            ? roomIsPublic
+              ? 'PUBLIC ROOM / LISTED IN ROOMS'
+              : 'UNLISTED ROOM / CODE REQUIRED'
+            : lobbyMode === 'join'
+              ? 'ENTER A ROOM CODE'
+              : 'BROWSE PUBLIC ROOMS',
+      );
+    }
+    dom.enterButton.disabled = !multiplayerActive && lobbyMode !== 'solo';
+  }
+
+  function setRoomVisibility(isPublic) {
+    roomIsPublic = Boolean(isPublic);
+    dom.roomVisibility.textContent = roomIsPublic ? 'PUBLIC' : 'UNLISTED';
+    dom.roomVisibility.setAttribute('aria-pressed', String(roomIsPublic));
+    dom.roomVisibility.setAttribute(
+      'aria-label',
+      roomIsPublic ? 'Room will appear in the public directory' : 'Room will require a private code',
+    );
+    if (lobbyMode === 'host' && !multiplayerActive) {
+      setLobbyStatus(roomIsPublic ? 'PUBLIC ROOM / LISTED IN ROOMS' : 'UNLISTED ROOM / CODE REQUIRED');
+    }
+  }
+
+  function setDirectoryState(state, message) {
+    dom.coopLobby.classList.toggle('is-directory-loading', state === 'loading');
+    dom.roomDirectoryEmpty.textContent = message;
+    dom.roomDirectoryEmpty.hidden = dom.roomList.childElementCount > 0 && state !== 'error';
+    if (state === 'loading') dom.roomDirectoryCount.textContent = '--';
+  }
+
+  function directoryPhaseLabel(room) {
+    if (!room.joinable) return Number(room.availableSlots) <= 0 ? 'FULL' : 'CLOSED';
+    if (room.phase === 'loading') return 'TRANSIT';
+    if (room.phase === 'active' || room.phase === 'playing') return 'IN LEVEL';
+    return 'OPEN';
+  }
+
+  function renderRoomDirectory(payload = multiplayer.roomDirectory) {
+    const directory = payload?.directory || payload || {};
+    const rooms = Array.isArray(directory.rooms) ? directory.rooms : [];
+    const focusedCode = document.activeElement?.closest?.('.room-signal')?.dataset.code;
+    dom.roomList.replaceChildren();
+    for (const room of rooms) {
+      const code = normalizeRoomCode(room?.code);
+      if (!code) continue;
+      const playerCount = Math.max(0, Number(room.playerCount) || 0);
+      const capacity = Math.max(1, Number(room.capacity) || 8);
+      const availableSlots = Math.max(0, Number(room.availableSlots ?? capacity - playerCount) || 0);
+      const levelNumber = Math.max(0, Number(room.level) || 0);
+      const joinable = room.joinable !== false && availableSlots > 0;
+      const listItem = document.createElement('div');
+      listItem.setAttribute('role', 'listitem');
+      const button = document.createElement('button');
+      button.className = 'room-signal';
+      button.type = 'button';
+      button.dataset.code = code;
+      button.dataset.joinable = String(joinable);
+      button.disabled = !joinable;
+      button.setAttribute(
+        'aria-label',
+        `${joinable ? 'Join' : 'Unavailable'} room ${code}, level ${levelNumber}, ${playerCount} of ${capacity} survivors`,
+      );
+
+      const codeLabel = document.createElement('strong');
+      codeLabel.textContent = code;
+      const levelLabel = document.createElement('span');
+      levelLabel.textContent = `LEVEL ${levelNumber}`;
+      const rosterLabel = document.createElement('span');
+      rosterLabel.textContent = `${playerCount}/${capacity}`;
+      const phaseLabel = document.createElement('small');
+      phaseLabel.textContent = directoryPhaseLabel({
+        ...room,
+        playerCount,
+        capacity,
+        availableSlots,
+        joinable,
+      });
+      button.append(codeLabel, levelLabel, rosterLabel, phaseLabel);
+      listItem.append(button);
+      dom.roomList.append(listItem);
+    }
+    const listedCount = dom.roomList.childElementCount;
+    const total = Math.max(listedCount, Number(directory.total) || listedCount);
+    dom.roomDirectoryCount.textContent = directory.truncated
+      ? `${listedCount}/${total}`
+      : String(total).padStart(2, '0');
+    dom.roomDirectoryEmpty.hidden = listedCount > 0;
+    dom.roomDirectoryEmpty.textContent = 'NO OPEN SIGNALS / HOST A ROOM OR REFRESH';
+    dom.coopLobby.classList.remove('is-directory-loading');
+    if (focusedCode) {
+      const restoredFocus = [...dom.roomList.querySelectorAll('.room-signal')]
+        .find((button) => button.dataset.code === focusedCode);
+      (restoredFocus || dom.coopConnect).focus({ preventScroll: true });
+    }
+  }
+
+  async function refreshRoomDirectory({ subscribe = false } = {}) {
+    if (lobbyMode !== 'rooms') return;
+    const requestGeneration = ++directoryRequestGeneration;
+    setDirectoryState('loading', 'SCANNING OPEN SIGNALS');
+    setLobbyStatus('SCANNING PUBLIC ROOMS');
+    try {
+      const payload = subscribe
+        ? await multiplayer.subscribeRoomDirectory({ limit: 50 })
+        : await multiplayer.listRooms({ limit: 50 });
+      if (requestGeneration !== directoryRequestGeneration || lobbyMode !== 'rooms') return;
+      renderRoomDirectory(payload);
+      setLobbyStatus('SELECT A SIGNAL TO JOIN');
+    } catch (error) {
+      if (requestGeneration !== directoryRequestGeneration || lobbyMode !== 'rooms') return;
+      dom.roomList.replaceChildren();
+      dom.roomDirectoryCount.textContent = '!!';
+      setDirectoryState('error', 'ROOM DIRECTORY UNAVAILABLE / REFRESH TO RETRY');
+      setLobbyStatus(error?.message?.toUpperCase?.() || 'ROOM DIRECTORY UNAVAILABLE', 'error');
+    }
+  }
+
+  function roomResumeKey(code) {
+    return `threshold-room-resume-${normalizeRoomCode(code)}`;
+  }
+
+  function connectedRoomPlayers() {
+    return (multiplayer.room?.players || []).filter((player) => player.connected !== false);
+  }
+
+  function roomCapacity(room = multiplayer.room) {
+    return clamp(Math.trunc(Number(room?.capacity) || ROOM_CAPACITY), 1, ROOM_CAPACITY);
+  }
+
+  function roomSessionStarted(room = multiplayer.room) {
+    if (!room) return false;
+    const phase = String(room.game?.phase || '').toLowerCase();
+    return Number(room.epoch) > 1
+      || ['playing', 'active', 'loading', 'complete'].includes(phase)
+      || ['session-start', 'level-complete'].includes(room.game?.lastEvent);
+  }
+
+  function hydrateWaitingRoomState(room = multiplayer.room) {
+    if (!room) return;
+    const selfState = (room.players || [])
+      .find((player) => player.id === multiplayer.self?.id)?.state || {};
+    localLook = survivorLook(selfState.look || localLook).id;
+    localReady = roomSessionStarted(room) || selfState.ready === true;
+    sessionStarted = roomSessionStarted(room);
+    sessionStartPending = false;
+  }
+
+  function currentWaitingRoomModel() {
+    return waitingRoomModel({
+      players: multiplayer.room?.players || [],
+      selfId: multiplayer.self?.id,
+      hostId: multiplayer.room?.hostId,
+      localReady,
+      localLook,
+      localCharacterId,
+      started: sessionStarted,
+      capacity: roomCapacity(),
+    });
+  }
+
+  function waitingPlayerSlot(player) {
+    const slot = document.createElement('div');
+    slot.className = 'waiting-slot';
+    slot.setAttribute('role', 'listitem');
+    slot.dataset.ready = String(player.ready);
+    slot.dataset.local = String(player.local);
+    slot.dataset.playerId = player.id;
+    slot.setAttribute(
+      'aria-label',
+      `${player.name}, ${player.host ? 'host, ' : ''}${player.ready ? 'ready' : 'choosing'}, ${player.look.name} suit`,
+    );
+
+    const avatar = document.createElement('div');
+    avatar.className = 'waiting-avatar-viewport';
+    avatar.setAttribute('aria-hidden', 'true');
+
+    const name = document.createElement('strong');
+    name.textContent = player.name;
+    const state = document.createElement('small');
+    const role = player.host ? 'HOST' : player.local ? 'YOU' : 'SIGNAL';
+    state.textContent = `${player.ready ? 'READY' : 'CHOOSING'} / ${role}`;
+    slot.append(avatar, name, state);
+    return slot;
+  }
+
+  function emptyWaitingSlot(index) {
+    const slot = document.createElement('div');
+    slot.className = 'waiting-slot is-empty';
+    slot.setAttribute('role', 'listitem');
+    slot.setAttribute('aria-label', `Empty survivor slot ${index + 1}`);
+    const label = document.createElement('strong');
+    label.textContent = 'WAITING';
+    const state = document.createElement('small');
+    state.textContent = 'OPEN SIGNAL';
+    slot.append(label, state);
+    return slot;
+  }
+
+  function updateWaitingRoom() {
+    const visible = multiplayerActive && gameState === 'start';
+    dom.coopLobby.classList.toggle('is-waiting', visible);
+    dom.overlay.classList.toggle('has-waiting-room', visible);
+    dom.waitingRoom.hidden = !visible;
+    waitingRoomPreview.setVisible(visible);
+    if (visible) dom.game.dataset.waitingRoom = 'true';
+    else delete dom.game.dataset.waitingRoom;
+    if (!visible) return;
+
+    const waiting = currentWaitingRoomModel();
+    waitingAction = waiting.action;
+    dom.waitingRoomCount.textContent = `${waiting.players.length}/${waiting.capacity}`;
+    dom.waitingSlots.replaceChildren(
+      ...waiting.players.map(waitingPlayerSlot),
+      ...Array.from(
+        { length: waiting.emptySlots },
+        (_, index) => emptyWaitingSlot(waiting.players.length + index),
+      ),
+    );
+    waitingRoomPreview.setPlayers(waiting.players);
+
+    for (const button of dom.lookPicker.querySelectorAll('[data-look]')) {
+      const selected = button.dataset.look === localLook;
+      button.setAttribute('aria-pressed', String(selected));
+      button.disabled = sessionStarted || sessionStartPending || lobbyBusy;
+    }
+
+    dom.waitingRoomStatus.textContent = sessionStartPending
+      ? 'OPENING THE THRESHOLD / HOLD YOUR SIGNAL'
+      : waiting.started
+        ? 'RUN OPEN / ENTER WHEN READY'
+        : waiting.isHost && waiting.allReady && localReady
+          ? 'ALL SIGNALS READY / START WHEN YOU ARE'
+          : localReady
+            ? 'READY / WAITING FOR THE HOST'
+            : 'CHOOSE A SUIT / READY WHEN THE TEAM IS ASSEMBLED';
+    dom.enterLabel.textContent = waiting.actionLabel;
+    dom.enterButton.disabled = lobbyBusy || sessionStartPending;
+  }
+
+  function updateRoomHud() {
+    if (!multiplayerActive || !multiplayer.roomCode) {
+      waitingRoomPreview.setVisible(false);
+      dom.coopHud.classList.remove('is-visible');
+      dom.voiceControls.hidden = true;
+      dom.coopLobby.classList.remove('is-waiting');
+      dom.overlay.classList.remove('has-waiting-room');
+      dom.waitingRoom.hidden = true;
+      dom.game.dataset.multiplayer = 'solo';
+      delete dom.game.dataset.waitingRoom;
+      delete dom.game.dataset.room;
+      delete dom.game.dataset.roomHost;
+      delete dom.game.dataset.roomEpoch;
+      delete dom.game.dataset.remotePlayers;
+      return;
+    }
+    const count = Math.max(1, connectedRoomPlayers().length);
+    const capacity = roomCapacity();
+    dom.coopRoom.textContent = `ROOM ${multiplayer.roomCode}${multiplayer.isHost ? ' / HOST' : ''}`;
+    dom.coopRoster.textContent = `${count}/${capacity} ${count === 1 ? 'SURVIVOR' : 'SURVIVORS'}`;
+    dom.coopHud.classList.add('is-visible');
+    dom.voiceControls.hidden = false;
+    bindVoiceSession();
+    dom.game.dataset.multiplayer = 'active';
+    dom.game.dataset.room = multiplayer.roomCode;
+    dom.game.dataset.roomHost = String(multiplayer.isHost);
+    dom.game.dataset.roomEpoch = String(multiplayer.room?.epoch ?? '');
+    dom.game.dataset.remotePlayers = String(remotePlayers.size);
+    setLobbyStatus(`ROOM ${multiplayer.roomCode} / ${multiplayer.isHost ? 'HOST' : 'CONNECTED'}`, 'connected');
+    dom.copyInvite.hidden = false;
+    updateWaitingRoom();
+  }
+
+  function roomInviteUrl() {
+    const invite = new URL(window.location.href);
+    invite.searchParams.set('room', multiplayer.roomCode || normalizeRoomCode(dom.roomCode.value));
+    invite.searchParams.set('level', String(multiplayer.room?.level ?? levelIndex));
+    invite.searchParams.set('layout', 'shared');
+    invite.searchParams.delete('qa');
+    invite.searchParams.delete('complete');
+    invite.searchParams.delete('autowalk');
+    invite.searchParams.delete('monster');
+    return invite.toString();
+  }
+
+  function navigateToRoomWorld(room) {
+    const roomCode = normalizeRoomCode(room?.code || multiplayer.roomCode);
+    const roomSeed = Number(room?.seed);
+    const roomLevel = Number(room?.level);
+    if (!roomCode || !Number.isFinite(roomSeed) || !Number.isFinite(roomLevel)) return false;
+    voiceChat.disable();
+    sessionStorage.setItem('threshold-campaign-seed', String(roomSeed >>> 0));
+    if (multiplayer.resumeToken) {
+      sessionStorage.setItem(roomResumeKey(roomCode), multiplayer.resumeToken);
+    }
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('room', roomCode);
+    nextUrl.searchParams.set('level', String(roomLevel));
+    nextUrl.searchParams.set('layout', 'shared');
+    nextUrl.searchParams.delete('qa');
+    nextUrl.searchParams.delete('complete');
+    nextUrl.searchParams.delete('autowalk');
+    nextUrl.searchParams.delete('monster');
+    nextUrl.searchParams.delete('shadow');
+    roomNavigationPending = true;
+    window.location.replace(nextUrl.toString());
+    return true;
+  }
+
+  function normalizeRemoteSnapshot(payload) {
+    const player = payload?.player || payload || {};
+    const state = payload?.state || player.state || {};
+    const id = String(payload?.playerId || player.id || state.id || '');
+    if (!id) return null;
+    const position = state.position || {
+      x: state.x,
+      y: state.y,
+      z: state.z,
+    };
+    if (!Number.isFinite(Number(position?.x)) || !Number.isFinite(Number(position?.z))) return null;
+    const flashlight = state.flashlight === true;
+    const crouching = state.crouching === true;
+    const noise = clamp(Number(state.noise) || 0, 0, 2);
+    const rawExposure = Number(state.exposure);
+    const fallbackExposure = flashlight ? 1 : crouching ? 0.3 : 0.35;
+    const look = survivorLook(state.look);
+    return {
+      id,
+      name: player.name || state.name || 'TEAMMATE',
+      position: {
+        x: Number(position.x),
+        y: Number(position.y) || 0,
+        z: Number(position.z),
+      },
+      yaw: Number(state.yaw) || 0,
+      pitch: Number(state.pitch) || 0,
+      speed: Math.max(0, Number(state.speed) || 0),
+      velocity: state.velocity,
+      running: state.running === true,
+      crouching,
+      noise,
+      hidden: state.hidden === true,
+      exposure: Number.isFinite(rawExposure) ? clamp(rawExposure, 0, 1.5) : fallbackExposure,
+      alive: state.alive !== false,
+      playing: state.playing !== false,
+      flashlight,
+      visible: state.alive !== false && state.visible !== false,
+      look: look.id,
+      ready: state.ready === true,
+      characterId: typeof state.characterId === 'string' && characterCatalog.has(state.characterId)
+        ? state.characterId
+        : undefined,
+      color: playerColor(id, state.look),
+      receivedAt: performance.now(),
+    };
+  }
+
+  function upsertRemotePlayer(payload) {
+    const snapshot = normalizeRemoteSnapshot(payload);
+    if (!snapshot || snapshot.id === multiplayer.self?.id) return;
+    const previousSnapshot = remoteNetworkPlayers.get(snapshot.id);
+    if (previousSnapshot?.noiseHoldUntil > performance.now()) {
+      snapshot.noise = Math.max(snapshot.noise, previousSnapshot.noise);
+      snapshot.noiseHoldUntil = previousSnapshot.noiseHoldUntil;
+    }
+    if (killedRemotePlayers.has(snapshot.id)) {
+      snapshot.alive = false;
+      snapshot.visible = false;
+      snapshot.speed = 0;
+    }
+    remoteNetworkPlayers.set(snapshot.id, snapshot);
+    remotePlayers.upsert(snapshot);
+  }
+
+  function updateVoiceSpatial() {
+    if (!voiceChat.enabled || voiceChat.peerCount === 0) return;
+    camera.getWorldDirection(worldDirection);
+    const rightX = -worldDirection.z;
+    const rightZ = worldDirection.x;
+    for (const [playerId, snapshot] of remoteNetworkPlayers) {
+      const dx = snapshot.position.x - playerPosition.x;
+      const dz = snapshot.position.z - playerPosition.y;
+      const distance = Math.hypot(dx, dz);
+      const pan = distance > 0.001 ? (dx * rightX + dz * rightZ) / distance : 0;
+      voiceChat.setPeerSpatialState(playerId, { distance, pan });
+    }
+  }
+
+  function removeRemotePlayer(id) {
+    const key = String(id || '');
+    if (!key) return;
+    remoteNetworkPlayers.delete(key);
+    remotePlayers.remove(key);
+  }
+
+  function applyNetworkMonster(payload) {
+    const state = payload?.state || payload;
+    if (!state || typeof state !== 'object') return;
+    const now = performance.now();
+    const visible = state.visible !== false && state.mode !== 'hidden';
+    const recoveryRemaining = Number(state.recoveryRemaining);
+    huntRecoveryUntil = !visible && Number.isFinite(recoveryRemaining) && recoveryRemaining > 0
+      ? elapsed + recoveryRemaining
+      : 0;
+    const targetX = Number(state.x ?? state.position?.x);
+    const targetZ = Number(state.z ?? state.position?.z);
+    const gap = networkMonsterReceivedAt ? now - networkMonsterReceivedAt : Infinity;
+    const poseGap = Number.isFinite(targetX) && Number.isFinite(targetZ)
+      ? Math.hypot(entity.position.x - targetX, entity.position.z - targetZ)
+      : 0;
+    const snapPose = visible && (
+      !networkMonsterInitialized
+      || !networkMonsterWasVisible
+      || gap > 900
+      || poseGap > 7
+    );
+    const previousMode = networkMonsterState?.mode || networkMonsterPreviousMode;
+    const previousTargetPlayerId = networkMonsterState?.targetPlayerId;
+    networkMonsterState = { ...state };
+    networkMonsterReceivedAt = now;
+    networkMonsterInitialized = true;
+    networkMonsterWasVisible = visible;
+    networkMonsterPreviousMode = String(state.mode || 'hidden');
+    if (snapPose && Number.isFinite(targetX) && Number.isFinite(targetZ)) {
+      entity.position.set(targetX, 0, targetZ);
+      if (Number.isFinite(Number(state.yaw))) entity.rotation.y = Number(state.yaw);
+      entityCurrentSpeed = Math.max(0, Number(state.speed) || 0);
+      entityActualSpeed = entityCurrentSpeed;
+      entityAnimationStart = elapsed - Math.max(0, Number(state.animationTime) || 0);
+      networkMonsterStepDistance = 0;
+    }
+    if (
+      visible
+      && state.mode === 'chase'
+      && state.targetPlayerId === multiplayer.self?.id
+      && (previousMode !== 'chase' || previousTargetPlayerId !== multiplayer.self?.id)
+    ) {
+      showMessage('RUN', 0.72);
+      audio.impact();
+      flickerUntil = Math.max(flickerUntil, elapsed + 2.2);
+    }
+  }
+
+  function applyRoomSnapshot(room = multiplayer.room) {
+    if (!room) return;
+    const present = new Set();
+    for (const player of room.players || []) {
+      if (player.id === multiplayer.self?.id || player.connected === false) continue;
+      present.add(String(player.id));
+      if (player.state) upsertRemotePlayer(player);
+    }
+    for (const id of [...remoteNetworkPlayers.keys()]) {
+      if (!present.has(id)) removeRemotePlayer(id);
+    }
+    reconcileObjectives(room.objectives || {}, room.epoch);
+    reconcileEvidence(room.objectives || {}, room.epoch);
+    if (room.monster?.epoch === room.epoch) applyNetworkMonster(room.monster);
+    if (room.game?.epoch === room.epoch && room.game.lastEvent === 'level-complete') {
+      win({ broadcast: false });
+    }
+    updateRoomHud();
+  }
+
+  function recoverRoomSnapshot() {
+    if (!multiplayerActive || !multiplayer.isConnected) return;
+    multiplayer.requestSnapshot().then(applyRoomSnapshot).catch(() => {
+      setLobbyStatus('ROOM RESYNC FAILED', 'error');
+    });
+  }
+
+  function isCurrentRoomEvent(payload) {
+    return Number(payload?.epoch) === Number(multiplayer.room?.epoch);
+  }
+
+  async function finishRoomJoin(payload) {
+    const room = payload?.room || multiplayer.room;
+    if (!room) throw new Error('The room did not return a world snapshot.');
+    const roomSeed = Number(room.seed) >>> 0;
+    const roomLevel = Number(room.level);
+    if (multiplayer.resumeToken) {
+      sessionStorage.setItem(roomResumeKey(room.code), multiplayer.resumeToken);
+    }
+    const needsReload = roomSeed !== campaignSeed
+      || roomLevel !== levelIndex
+      || (mobile && !multiplayerRequested);
+    if (needsReload) return navigateToRoomWorld(room);
+
+    hydrateWaitingRoomState(room);
+    multiplayerActive = true;
+    localAlive = true;
+    const currentUrl = new URL(window.location.href);
+    currentUrl.searchParams.set('room', room.code);
+    currentUrl.searchParams.set('level', String(room.level));
+    currentUrl.searchParams.set('layout', 'shared');
+    window.history.replaceState(null, '', currentUrl);
+    lobbyMode = multiplayer.isHost ? 'host' : 'join';
+    setLobbyMode(lobbyMode);
+    applyRoomSnapshot(room);
+    setLobbyBusy(false);
+    sendLocalPlayerState(true);
+    return false;
+  }
+
+  async function leaveMultiplayer() {
+    const previousCode = multiplayer.roomCode;
+    voiceChat.disable();
+    try {
+      if (multiplayer.roomCode && multiplayer.isConnected) await multiplayer.leaveRoom();
+    } catch {
+      multiplayer.disconnect({ forgetRoom: true });
+    }
+    if (previousCode) sessionStorage.removeItem(roomResumeKey(previousCode));
+    multiplayerActive = false;
+    localReady = false;
+    sessionStarted = false;
+    sessionStartPending = false;
+    remoteNetworkPlayers.clear();
+    remotePlayers.clear();
+    killedRemotePlayers.clear();
+    pendingRemoteKills.clear();
+    networkMonsterState = null;
+    networkMonsterInitialized = false;
+    networkMonsterWasVisible = false;
+    dom.copyInvite.hidden = true;
+    dom.enterLabel.textContent = level.copy.start.button;
+    const soloUrl = new URL(window.location.href);
+    soloUrl.searchParams.delete('room');
+    soloUrl.searchParams.delete('layout');
+    window.history.replaceState(null, '', soloUrl);
+    updateRoomHud();
+  }
+
+  async function connectSelectedRoom() {
+    if (lobbyMode === 'solo') return;
+    localCallsign = normalizeCallsign(dom.playerName.value) || defaultCallsign;
+    dom.playerName.value = localCallsign;
+    localStorage.setItem('threshold-callsign', localCallsign);
+    const code = normalizeRoomCode(dom.roomCode.value);
+    dom.roomCode.value = code;
+    if (lobbyMode === 'join' && code.length < 4) {
+      setLobbyStatus('ROOM CODE REQUIRED', 'error');
+      dom.roomCode.focus();
+      return;
+    }
+    if (multiplayerActive) await leaveMultiplayer();
+    setLobbyBusy(true);
+    setLobbyStatus(lobbyMode === 'host' ? 'OPENING SECURE CHANNEL' : `CONNECTING TO ${code}`);
+    try {
+      let payload;
+      if (lobbyMode === 'host') {
+        payload = await multiplayer.createRoom({
+          name: localCallsign,
+          seed: campaignSeed,
+          level: levelIndex,
+          visibility: roomIsPublic ? 'public' : 'private',
+        });
+      } else {
+        const savedResumeToken = sessionStorage.getItem(roomResumeKey(code)) || undefined;
+        try {
+          payload = await multiplayer.joinRoom(code, {
+            name: localCallsign,
+            resumeToken: savedResumeToken,
+          });
+        } catch (error) {
+          if (error?.code !== 'RESUME_REJECTED' || !savedResumeToken) throw error;
+          sessionStorage.removeItem(roomResumeKey(code));
+          payload = await multiplayer.joinRoom(code, { name: localCallsign });
+        }
+      }
+      const navigating = await finishRoomJoin(payload);
+      if (!navigating) showMessage(multiplayer.isHost ? 'ROOM OPEN' : 'SIGNAL LINKED', 0.8);
+    } catch (error) {
+      setLobbyBusy(false);
+      setLobbyStatus(error?.message?.toUpperCase?.() || 'ROOM CONNECTION FAILED', 'error');
+    }
   }
 
   function objectiveProgressText() {
@@ -1414,6 +2839,107 @@ async function init() {
     dom.game.dataset.objectivesCompleted = String(objectivesCompleted);
   }
 
+  function objectiveIdFor(item) {
+    return `cell:${item.userData.cellIndex}`;
+  }
+
+  function objectiveFromId(objectiveId) {
+    const cellIndex = Number(String(objectiveId || '').replace(/^cell:/, ''));
+    if (!Number.isFinite(cellIndex)) return null;
+    return objectiveItems.find((item) => item.userData.cellIndex === cellIndex) || null;
+  }
+
+  function activateObjectiveById(objectiveId, { announce = true } = {}) {
+    const item = objectiveFromId(objectiveId);
+    if (!item || item.userData.activated) return false;
+    item.userData.activated = true;
+    objectivesCompleted += 1;
+    updateObjectiveHud();
+    if (announce) {
+      audio.objectiveComplete();
+      const progress = `${level.objective.labels.item} ${objectivesCompleted} / ${objectiveTotal}`;
+      showMessage(progress, 0.95);
+      flickerUntil = Math.max(flickerUntil, elapsed + 0.45);
+    }
+    if (objectivesCompleted >= objectiveTotal) {
+      exitSign.material.emissiveIntensity = 2.8;
+      if (announce) {
+        showMessage(level.objective.labels.complete, 1.6);
+        audio.powerDip(elapsed, 0.5);
+      }
+    }
+    return true;
+  }
+
+  function reconcileObjectives(objectives = {}, epoch = multiplayer.room?.epoch) {
+    const activeIds = new Set(
+      Object.values(objectives)
+        .filter((event) => event?.action === 'activate' && event.epoch === epoch)
+        .map((event) => String(event.objectiveId)),
+    );
+    objectivesCompleted = 0;
+    for (const item of objectiveItems) {
+      item.userData.activated = activeIds.has(objectiveIdFor(item));
+      if (item.userData.activated) objectivesCompleted += 1;
+    }
+    exitSign.material.emissiveIntensity = objectivesCompleted >= objectiveTotal ? 2.8 : 0.28;
+    updateObjectiveHud();
+  }
+
+  function evidenceIdFor(item) {
+    return `evidence:${item.userData.cellIndex}`;
+  }
+
+  function evidenceFromId(evidenceId) {
+    const cellIndex = Number(String(evidenceId || '').replace(/^evidence:/, ''));
+    if (!Number.isFinite(cellIndex)) return null;
+    return evidenceItems.find((item) => item.userData.cellIndex === cellIndex) || null;
+  }
+
+  function updateEvidenceHud() {
+    dom.evidenceState.textContent = `ARCHIVE ${evidenceCollected}/${evidenceItems.length}`;
+    dom.game.dataset.evidence = String(evidenceCollected);
+  }
+
+  function collectEvidenceById(evidenceId, { announce = true, grantCharge = false, collectorName = '' } = {}) {
+    const item = evidenceFromId(evidenceId);
+    if (!item || item.userData.collected) return false;
+    item.userData.collected = true;
+    item.visible = false;
+    evidenceCollected += 1;
+    updateEvidenceHud();
+    if (grantCharge) {
+      flashlightCharge = clamp(flashlightCharge + (level.evidence?.recharge ?? 0.3), 0, 1);
+      persistFlashlightCharge();
+      noiseImpulse = Math.max(noiseImpulse, 1.35);
+      audio.archivePickup();
+      updateEquipmentHud();
+    }
+    if (announce) {
+      const entry = evidenceEntries[item.userData.evidenceIndex] || 'ARCHIVE FRAGMENT RECOVERED';
+      showMessage(
+        grantCharge ? entry : `${collectorName || 'A TEAMMATE'} FOUND AN ARCHIVE`,
+        grantCharge ? 3.4 : 1.8,
+      );
+    }
+    return true;
+  }
+
+  function reconcileEvidence(objectives = {}, epoch = multiplayer.room?.epoch) {
+    const collectedIds = new Set(
+      Object.values(objectives)
+        .filter((event) => event?.action === 'collect' && event.epoch === epoch)
+        .map((event) => String(event.objectiveId)),
+    );
+    evidenceCollected = 0;
+    for (const item of evidenceItems) {
+      item.userData.collected = collectedIds.has(evidenceIdFor(item));
+      item.visible = !item.userData.collected;
+      if (item.userData.collected) evidenceCollected += 1;
+    }
+    updateEvidenceHud();
+  }
+
   function updateObjectiveAnimations(dt) {
     for (const item of objectiveItems) {
       const target = item.userData.activated ? 1 : 0;
@@ -1429,6 +2955,19 @@ async function init() {
       indicatorMaterial.color.set(item.userData.activated ? 0x72a96b : 0x4f160f);
       indicatorMaterial.emissive.set(item.userData.activated ? 0x5f9b59 : 0x7d160e);
       indicatorMaterial.emissiveIntensity = item.userData.activated ? 2.3 : 1.2;
+    }
+    for (const item of evidenceItems) {
+      if (item.userData.collected) continue;
+      item.position.y = item.userData.baseY + Math.sin(elapsed * 1.8 + item.userData.evidenceIndex) * 0.018;
+      item.rotation.y += dt * 0.12;
+      if (item.userData.indicator?.material) {
+        item.userData.indicator.material.emissiveIntensity = 1.8 + Math.sin(elapsed * 4.2) * 0.65;
+      }
+    }
+    for (const incident of incidentGroup.children) {
+      if (incident.userData.incidentType !== 'black-motes') continue;
+      incident.rotation.y += dt * 0.16;
+      incident.position.y = incident.userData.baseY + Math.sin(elapsed * 0.72 + incident.id) * 0.025;
     }
   }
 
@@ -1490,6 +3029,247 @@ async function init() {
     }
   }
 
+  function resolveEntityCollision() {
+    const radius = 0.2;
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      let resolved = false;
+      for (const box of colliders) {
+        if (
+          entity.position.x + radius < box.minX
+          || entity.position.x - radius > box.maxX
+          || entity.position.z + radius < box.minZ
+          || entity.position.z - radius > box.maxZ
+        ) continue;
+        const closestX = clamp(entity.position.x, box.minX, box.maxX);
+        const closestZ = clamp(entity.position.z, box.minZ, box.maxZ);
+        const deltaX = entity.position.x - closestX;
+        const deltaZ = entity.position.z - closestZ;
+        const distanceSquared = deltaX * deltaX + deltaZ * deltaZ;
+        if (distanceSquared >= radius * radius) continue;
+        if (distanceSquared > 0.0000001) {
+          const distance = Math.sqrt(distanceSquared);
+          const correction = radius - distance;
+          entity.position.x += (deltaX / distance) * correction;
+          entity.position.z += (deltaZ / distance) * correction;
+        } else {
+          const distances = [
+            { value: Math.abs(entity.position.x - box.minX), x: -1, z: 0 },
+            { value: Math.abs(box.maxX - entity.position.x), x: 1, z: 0 },
+            { value: Math.abs(entity.position.z - box.minZ), x: 0, z: -1 },
+            { value: Math.abs(box.maxZ - entity.position.z), x: 0, z: 1 },
+          ].sort((a, b) => a.value - b.value);
+          entity.position.x += distances[0].x * (radius + distances[0].value);
+          entity.position.z += distances[0].z * (radius + distances[0].value);
+        }
+        resolved = true;
+      }
+      if (!resolved) break;
+    }
+  }
+
+  function updateEquipmentHud() {
+    const percent = Math.round(flashlightCharge * 100);
+    dom.flashlightLabel.textContent = `F  LIGHT ${flashlightOn ? 'ON' : 'OFF'} / ${percent}`;
+    dom.flashlightFill.style.transform = `scaleX(${flashlightCharge})`;
+    dom.flashlightHud.classList.toggle('is-low', flashlightCharge < 0.16);
+    dom.touchLight.textContent = flashlightOn ? 'LIGHT ON' : 'LIGHT OFF';
+    dom.touchLight.setAttribute('aria-pressed', String(flashlightOn));
+    dom.touchFlash.disabled = elapsed < flashlightCooldownUntil || flashlightCharge < (flashlightProfile.flashCost ?? 0.28);
+    dom.game.dataset.flashlight = String(flashlightOn);
+    dom.game.dataset.battery = flashlightCharge.toFixed(3);
+    dom.game.dataset.hidden = String(playerHidden);
+    dom.game.dataset.fear = fear.toFixed(3);
+  }
+
+  function persistFlashlightCharge() {
+    sessionStorage.setItem(batteryStorageKey, flashlightCharge.toFixed(4));
+    batteryPersistAt = elapsed + 2;
+  }
+
+  function setFlashlight(next, { announce = true } = {}) {
+    if (next && flashlightCharge <= 0.01) {
+      if (announce) showMessage('THE LIGHT HAS NO CHARGE', 0.65);
+      return false;
+    }
+    flashlightOn = Boolean(next);
+    if (announce) showMessage(flashlightOn ? 'FLASHLIGHT ON' : 'FLASHLIGHT OFF', 0.45);
+    updateEquipmentHud();
+    sendLocalPlayerState(true);
+    return flashlightOn;
+  }
+
+  function applyCameraFlashAt(sourceX, sourceZ, directionX, directionZ, localSource = false) {
+    if (!entity.visible || entityMode === 'hidden') return false;
+    const deltaX = entity.position.x - sourceX;
+    const deltaZ = entity.position.z - sourceZ;
+    const distance = Math.hypot(deltaX, deltaZ);
+    if (distance > 13 || distance < 0.001) return false;
+    const directionLength = Math.hypot(directionX, directionZ) || 1;
+    const gaze = (deltaX * directionX + deltaZ * directionZ) / (distance * directionLength);
+    if (gaze < 0.7 || !hasClearLine(sourceX, sourceZ, entity.position.x, entity.position.z)) return false;
+    flashWatchUntil = Math.max(flashWatchUntil, elapsed + 0.7);
+    entityAwareness = Math.max(entityAwareness, 0.68);
+    entityLastKnownCell = maze.worldToCell(sourceX, sourceZ);
+    entityHeardPlayer = true;
+    if (entityMode === 'glimpse') {
+      entityMode = 'stalk';
+      entityUntil = elapsed + level.monster.timing.stalkDuration;
+    }
+    if (localSource) showMessage('THE FLASH MADE IT LOOK AT YOU', 0.78);
+    publishMonsterState(true);
+    return true;
+  }
+
+  function presentRemoteFlash(state = {}) {
+    const sourceX = Number(state.position?.x);
+    const sourceZ = Number(state.position?.z);
+    if (!Number.isFinite(sourceX) || !Number.isFinite(sourceZ)) return false;
+    remoteFlashLight.position.set(sourceX, 1.45, sourceZ);
+    remoteFlashLight.intensity = reducedMotion ? 18 : 92;
+    remoteFlashLight.visible = true;
+    remoteFlashUntil = elapsed + (reducedMotion ? 0.08 : 0.22);
+    camera.getWorldDirection(worldDirection);
+    worldDirection.y = 0;
+    worldDirection.normalize();
+    rightDirection.crossVectors(worldDirection, up).normalize();
+    const deltaX = sourceX - playerPosition.x;
+    const deltaZ = sourceZ - playerPosition.y;
+    const distance = Math.hypot(deltaX, deltaZ) || 1;
+    const pan = clamp((deltaX * rightDirection.x + deltaZ * rightDirection.z) / distance, -1, 1);
+    audio.ambientCue('ballast-pop', pan, 1);
+    return true;
+  }
+
+  function triggerCameraFlash() {
+    if (gameState !== 'playing' || elapsed < flashlightCooldownUntil) return false;
+    const result = spendFlash(flashlightCharge, flashlightProfile.flashCost ?? 0.28);
+    if (!result.fired) {
+      showMessage('NOT ENOUGH CHARGE', 0.58);
+      return false;
+    }
+    flashlightCharge = result.charge;
+    persistFlashlightCharge();
+    flashlightBoostUntil = elapsed + 0.18;
+    flashlightCooldownUntil = elapsed + 1.8;
+    noiseImpulse = Math.max(noiseImpulse, 1.75);
+    flickerUntil = Math.max(flickerUntil, elapsed + 0.28);
+    audio.flashBurst();
+    camera.getWorldDirection(worldDirection);
+    worldDirection.y = 0;
+    worldDirection.normalize();
+    if (multiplayerActive && !multiplayer.isHost) {
+      multiplayer.sendObjectiveIntent({
+        objectiveId: 'entity',
+        action: 'flash',
+        state: {
+          position: { x: playerPosition.x, z: playerPosition.y },
+          direction: { x: worldDirection.x, z: worldDirection.z },
+        },
+      }).catch(() => {});
+    } else {
+      applyCameraFlashAt(
+        playerPosition.x,
+        playerPosition.y,
+        worldDirection.x,
+        worldDirection.z,
+        true,
+      );
+      if (multiplayerActive) {
+        multiplayer.sendGameEvent({
+          action: 'camera-flash',
+          state: {
+            playerId: multiplayer.self?.id,
+            position: { x: playerPosition.x, z: playerPosition.y },
+          },
+        }).catch(() => {});
+      }
+    }
+    updateEquipmentHud();
+    sendLocalPlayerState(true);
+    return true;
+  }
+
+  function updateSurvivalState(dt, moving, crouching, actualSpeed) {
+    const previousOn = flashlightOn;
+    const battery = stepBattery({
+      charge: flashlightCharge,
+      on: flashlightOn,
+      playing: gameState === 'playing',
+    }, dt, flashlightProfile);
+    flashlightCharge = battery.charge;
+    flashlightOn = battery.on;
+    if (previousOn && !flashlightOn && flashlightCharge <= 0.001) {
+      showMessage('THE FLASHLIGHT DIED', 0.8);
+    }
+
+    noiseImpulse = stepNoiseImpulse(noiseImpulse, dt);
+    playerNoise = Math.max(movementNoise, noiseImpulse);
+    const currentCell = maze.worldToCell(playerPosition.x, playerPosition.y);
+    const currentCoords = maze.coords(currentCell);
+    const fixtureLight = lightPool.some((light) => {
+      if (!light.visible) return false;
+      const lightCell = Number(light.userData.cell);
+      if (!Number.isFinite(lightCell)) return false;
+      const lightCoords = maze.coords(lightCell);
+      const deltaCol = lightCoords.col - currentCoords.col;
+      const deltaRow = lightCoords.row - currentCoords.row;
+      const adjacent = Math.abs(deltaCol) + Math.abs(deltaRow) === 1;
+      let openToLight = lightCell === currentCell;
+      if (adjacent) {
+        const direction = DIRECTIONS.find((entry) => entry.dc === deltaCol && entry.dr === deltaRow);
+        openToLight = direction ? !maze.hasWall(currentCell, direction.bit) : false;
+      }
+      return openToLight
+        && Math.hypot(light.position.x - playerPosition.x, light.position.z - playerPosition.y) < 5.2;
+    });
+    const teammateLight = [...remoteNetworkPlayers.values()].some((snapshot) => (
+      snapshot.alive
+      && snapshot.playing
+      && snapshot.flashlight
+      && Math.hypot(snapshot.position.x - playerPosition.x, snapshot.position.z - playerPosition.y) < 5.2
+    ));
+    playerInReliableLight = worldLightReliability > 0.3 && (fixtureLight || teammateLight);
+    const hiding = stepHiding({ settle: hidingSettle }, dt, {
+      shadowed: !playerInReliableLight,
+      stationary: !moving && actualSpeed < 0.12,
+      flashlightOn,
+      noise: Math.max(playerNoise, noiseImpulse),
+      crouching,
+    });
+    hidingSettle = hiding.settle;
+    playerHidden = hiding.hidden;
+    playerExposure = playerHidden
+      ? 0.06
+      : flashlightOn
+        ? 1
+        : crouching
+          ? 0.3
+          : playerInReliableLight
+            ? 0.68
+            : 0.22;
+    dom.stealthState.hidden = !playerHidden;
+
+    const burst = elapsed < flashlightBoostUntil;
+    const lowChargeFlicker = flashlightCharge < 0.16
+      && flashlightOn
+      && !reducedMotion
+      && cosmeticRandom() < dt * (2.2 + (0.16 - flashlightCharge) * 22);
+    playerFlashlight.visible = burst || (flashlightOn && !lowChargeFlicker);
+    flashlightBounce.visible = playerFlashlight.visible;
+    const chargeIntensity = lerp(0.58, 1, clamp(flashlightCharge / 0.35, 0, 1));
+    playerFlashlight.intensity = (flashlightProfile.intensity ?? (mobile ? 38 : 52))
+      * chargeIntensity
+      * (burst ? (reducedMotion ? 1.65 : 5.5) : 1);
+    flashlightBounce.intensity = (burst ? (reducedMotion ? 2.1 : 7.5) : 1.25) * chargeIntensity;
+    if (elapsed >= batteryPersistAt) {
+      persistFlashlightCharge();
+    }
+    if (elapsed >= equipmentHudUpdateAt) {
+      equipmentHudUpdateAt = elapsed + 0.1;
+      updateEquipmentHud();
+    }
+  }
+
   function simulatePlayer(dt) {
     const forwardInput = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0)
       - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) + touchInput.y;
@@ -1509,7 +3289,10 @@ async function init() {
     if (desiredDirection.lengthSq() > 1) desiredDirection.normalize();
 
     const moving = inputDirection.lengthSq() > 0.015;
-    const crouching = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC');
+    const crouching = touchCrouch
+      || keys.has('ControlLeft')
+      || keys.has('ControlRight')
+      || keys.has('KeyC');
     const wantsSprint = (keys.has('ShiftLeft') || keys.has('ShiftRight') || touchSprint) && moving && !crouching;
     const sprinting = wantsSprint && stamina > 0.035;
     const targetSpeed = crouching ? 1.25 : sprinting ? 4.35 : 2.28;
@@ -1533,8 +3316,12 @@ async function init() {
     }
 
     const actualSpeed = velocity.length();
+    playerCrouching = crouching;
+    playerRunning = sprinting;
+    playerActualSpeed = actualSpeed;
     const noiseTarget = !moving ? 0 : crouching ? 0.12 : sprinting ? 1 : 0.42;
-    playerNoise = lerp(playerNoise, noiseTarget, 1 - Math.exp(-5 * dt));
+    movementNoise = lerp(movementNoise, noiseTarget, 1 - Math.exp(-5 * dt));
+    playerNoise = Math.max(movementNoise, noiseImpulse);
     if (moving && actualSpeed > 0.3) {
       stepDistance += actualSpeed * dt;
       const stride = sprinting ? 1.45 : crouching ? 2.2 : 1.75;
@@ -1549,6 +3336,7 @@ async function init() {
     currentEyeHeight = lerp(currentEyeHeight, targetEye, 1 - Math.exp(-9 * dt));
     const bobAmount = reducedMotion || crouching ? 0 : Math.sin(headBob * Math.PI) * Math.min(actualSpeed / 4, 1) * 0.035;
     camera.position.set(playerPosition.x, currentEyeHeight + bobAmount, playerPosition.y);
+    updateSurvivalState(dt, moving, crouching, actualSpeed);
 
     dom.stamina.classList.toggle('is-visible', stamina < 0.98 || wantsSprint);
     dom.staminaFill.style.transform = `scaleX(${stamina})`;
@@ -1639,7 +3427,27 @@ async function init() {
   }
 
   function placeEntity(mode) {
-    const playerCell = maze.worldToCell(playerPosition.x, playerPosition.y);
+    const spawnPlayers = [{
+      id: 'local',
+      x: playerPosition.x,
+      z: playerPosition.y,
+      noise: playerNoise,
+    }];
+    for (const snapshot of remoteNetworkPlayers.values()) {
+      if (
+        snapshot.alive
+        && snapshot.playing
+        && performance.now() - snapshot.receivedAt < 2500
+      ) spawnPlayers.push({
+        id: snapshot.id,
+        x: snapshot.position.x,
+        z: snapshot.position.z,
+        noise: snapshot.noise,
+      });
+    }
+    const anchor = spawnPlayers.find((player) => player.id === entityTargetPlayerId)
+      || [...spawnPlayers].sort((left, right) => right.noise - left.noise)[0];
+    const playerCell = maze.worldToCell(anchor.x, anchor.z);
     let targetCell;
     if (mode === 'glimpse') {
       const distances = maze.distanceMap(playerCell);
@@ -1647,11 +3455,15 @@ async function init() {
       for (let i = 0; i < distances.length; i += 1) {
         if (distances[i] < 4 || distances[i] > 10) continue;
         const candidate = maze.cellToWorld(i);
-        const worldDistance = Math.hypot(candidate.x - playerPosition.x, candidate.z - playerPosition.y);
+        const worldDistance = Math.hypot(candidate.x - anchor.x, candidate.z - anchor.z);
+        const clearOfPlayers = spawnPlayers.every((player) => (
+          Math.hypot(candidate.x - player.x, candidate.z - player.z) > 4.5
+        ));
         if (
           worldDistance > 6
           && worldDistance < 23.5
-          && hasClearLine(playerPosition.x, playerPosition.y, candidate.x, candidate.z)
+          && clearOfPlayers
+          && hasClearLine(anchor.x, anchor.z, candidate.x, candidate.z)
         ) visibleCells.push(i);
       }
       if (!visibleCells.length) return false;
@@ -1662,23 +3474,31 @@ async function init() {
       for (let i = 0; i < distances.length; i += 1) {
         if (distances[i] < 8 || distances[i] > 17 || i === exitIndex) continue;
         const candidate = maze.cellToWorld(i);
-        if (!hasClearLine(playerPosition.x, playerPosition.y, candidate.x, candidate.z)) hiddenCells.push(i);
+        const hiddenFromEveryone = spawnPlayers.every((player) => (
+          Math.hypot(candidate.x - player.x, candidate.z - player.z) > 6
+          && !hasClearLine(player.x, player.z, candidate.x, candidate.z)
+        ));
+        if (hiddenFromEveryone) hiddenCells.push(i);
       }
-      targetCell = hiddenCells.length
-        ? hiddenCells[Math.floor(random() * hiddenCells.length)]
-        : maze.randomCellAtDistance(playerCell, 8, 17, random);
+      if (!hiddenCells.length) return false;
+      targetCell = hiddenCells[Math.floor(random() * hiddenCells.length)];
     }
     const target = maze.cellToWorld(targetCell);
     entity.position.set(target.x, 0, target.z);
-    entityPreviousPosition.copy(entity.position);
+    entity.rotation.y = Math.atan2(anchor.x - target.x, anchor.z - target.z);
     entity.visible = true;
     entityMode = mode;
+    dom.game.dataset.monsterMode = entityMode;
     entityUntil = mode === 'glimpse'
       ? elapsed + level.monster.timing.glimpseDuration
       : mode === 'stalk'
         ? elapsed + level.monster.timing.stalkDuration
         : Infinity;
     entityLastKnownCell = playerCell;
+    entityTargetPlayerId = anchor.id;
+    entityTargetPlayerX = anchor.x;
+    entityTargetPlayerZ = anchor.z;
+    entityTargetPlayerNoise = anchor.noise;
     entityPath = [];
     entityPathIndex = 0;
     entityPathUpdate = 0;
@@ -1686,6 +3506,8 @@ async function init() {
     entityLostSight = 0;
     entityCurrentSpeed = 0;
     entityStepDistance = 0;
+    entityStuckTime = 0;
+    entityAnimationStart = elapsed;
     entityPerceptionUpdate = 0;
     return true;
   }
@@ -1693,16 +3515,86 @@ async function init() {
   function hideEntity() {
     entity.visible = false;
     entityMode = 'hidden';
+    dom.game.dataset.monsterMode = entityMode;
     entityPath = [];
     entitySeenFor = 0;
     entityCurrentSpeed = 0;
     entityCanSeePlayer = false;
+    entitySightContact = false;
     entityHeardPlayer = false;
-    animateMonster(entity, { time: elapsed, speed: 0, mode: 'hidden', distance: Infinity });
+    entityAwareness = 0;
+    entityStuckTime = 0;
+    animateMonster(entity, { time: elapsed - entityAnimationStart, speed: 0, mode: 'hidden', distance: Infinity });
+  }
+
+  function updateNetworkEntity(dt) {
+    const state = networkMonsterState;
+    const stateAge = performance.now() - networkMonsterReceivedAt;
+    if (!state || stateAge > 3500) {
+      entity.visible = false;
+      entityMode = 'hidden';
+      entityCurrentSpeed = lerp(entityCurrentSpeed, 0, 1 - Math.exp(-6 * dt));
+      return Infinity;
+    }
+    const visible = state.visible !== false && state.mode !== 'hidden';
+    entity.visible = visible;
+    entityMode = visible ? String(state.mode || 'stalk') : 'hidden';
+    entityAwareness = clamp(Number(state.awareness) || 0, 0, 1);
+    if (!visible) {
+      animateMonster(entity, { time: elapsed - entityAnimationStart, speed: 0, mode: 'hidden', distance: Infinity });
+      return Infinity;
+    }
+    const frameStartX = entity.position.x;
+    const frameStartZ = entity.position.z;
+    const targetX = Number(state.x ?? state.position?.x);
+    const targetZ = Number(state.z ?? state.position?.z);
+    if (stateAge < 700 && Number.isFinite(targetX) && Number.isFinite(targetZ)) {
+      const alpha = 1 - Math.exp(-12 * dt);
+      entity.position.x = lerp(entity.position.x, targetX, alpha);
+      entity.position.z = lerp(entity.position.z, targetZ, alpha);
+    }
+    const targetYaw = Number(state.yaw);
+    if (Number.isFinite(targetYaw)) {
+      const yawDelta = Math.atan2(
+        Math.sin(targetYaw - entity.rotation.y),
+        Math.cos(targetYaw - entity.rotation.y),
+      );
+      entity.rotation.y += yawDelta * (1 - Math.exp(-14 * dt));
+    }
+    entity.position.y = 0;
+    const transmittedSpeed = stateAge < 700 ? Math.max(0, Number(state.speed) || 0) : 0;
+    entityCurrentSpeed = lerp(entityCurrentSpeed, transmittedSpeed, 1 - Math.exp(-10 * dt));
+    const actualMovement = Math.hypot(entity.position.x - frameStartX, entity.position.z - frameStartZ);
+    entityActualSpeed = clamp(
+      actualMovement / Math.max(0.001, dt),
+      0,
+      level.monster.speeds.chase * 1.2,
+    );
+    const distance = Math.hypot(entity.position.x - playerPosition.x, entity.position.z - playerPosition.y);
+    entityVector.copy(entity.position).sub(camera.position);
+    entityVector.y = 0;
+    if (entityVector.lengthSq() > 0.0001) entityVector.normalize();
+    animateMonster(entity, {
+      time: elapsed - entityAnimationStart,
+      speed: entityActualSpeed,
+      mode: distance < 1.8 ? 'attack' : entityMode,
+      distance,
+    });
+    networkMonsterStepDistance += actualMovement;
+    const stride = entityMode === 'chase' ? 0.9 : 0.72;
+    if (stateAge < 700 && networkMonsterStepDistance >= stride) {
+      networkMonsterStepDistance -= stride;
+      const pan = clamp(rightDirection.dot(entityVector), -1, 1);
+      audio.monsterStep(pan, distance, entityMode === 'chase');
+    }
+    dom.game.dataset.monsterMode = entityMode;
+    return distance;
   }
 
   function updateEntity(dt) {
     if (entityMode === 'hidden') return Infinity;
+    const entityFrameStartX = entity.position.x;
+    const entityFrameStartZ = entity.position.z;
     entityVector.copy(entity.position).sub(camera.position);
     entityVector.y = 0;
     const distance = entityVector.length();
@@ -1718,20 +3610,175 @@ async function init() {
 
     const entityCell = maze.worldToCell(entity.position.x, entity.position.z);
     const playerCell = maze.worldToCell(playerPosition.x, playerPosition.y);
+    if (entityTargetPlayerId === 'local') {
+      entityTargetPlayerX = playerPosition.x;
+      entityTargetPlayerZ = playerPosition.y;
+      entityTargetPlayerNoise = playerNoise;
+      entityTargetHidden = playerHidden;
+      entityTargetExposure = playerExposure;
+    } else {
+      const trackedPlayer = remoteNetworkPlayers.get(entityTargetPlayerId);
+      if (trackedPlayer?.alive && trackedPlayer.playing) {
+        entityTargetPlayerX = trackedPlayer.position.x;
+        entityTargetPlayerZ = trackedPlayer.position.z;
+        entityTargetPlayerNoise = trackedPlayer.noise;
+        entityTargetHidden = trackedPlayer.hidden;
+        entityTargetExposure = trackedPlayer.exposure;
+      } else {
+        entityTargetPlayerId = 'local';
+        entityTargetPlayerX = playerPosition.x;
+        entityTargetPlayerZ = playerPosition.y;
+        entityTargetPlayerNoise = playerNoise;
+        entityTargetHidden = playerHidden;
+        entityTargetExposure = playerExposure;
+      }
+    }
+    let focusDistance = Math.hypot(
+      entityTargetPlayerX - entity.position.x,
+      entityTargetPlayerZ - entity.position.z,
+    );
+    let focusCell = maze.worldToCell(entityTargetPlayerX, entityTargetPlayerZ);
     entityPerceptionUpdate -= dt;
     if (entityPerceptionUpdate <= 0) {
-      entityCanSeePlayer = distance < 23
-        && hasClearLine(entity.position.x, entity.position.z, playerPosition.x, playerPosition.y);
-      const routeDistance = maze.shortestPath(entityCell, playerCell).length - 1;
-      const hearingRange = 2 + Math.round(playerNoise * 9);
-      entityHeardPlayer = playerNoise > 0.1 && routeDistance >= 0 && routeDistance <= hearingRange;
-      if (entityCanSeePlayer || entityHeardPlayer) entityLastKnownCell = playerCell;
+      const candidates = [{
+        id: 'local',
+        x: playerPosition.x,
+        z: playerPosition.y,
+        noise: playerNoise,
+        speed: playerActualSpeed,
+        flashlight: flashlightOn,
+        hidden: playerHidden,
+        exposure: playerExposure,
+        crouching: playerCrouching,
+        yaw: camera.rotation.y + Math.PI,
+        alive: localAlive,
+        playing: true,
+      }];
+      for (const snapshot of remoteNetworkPlayers.values()) {
+        if (performance.now() - snapshot.receivedAt > 3000) continue;
+        candidates.push({
+          id: snapshot.id,
+          x: snapshot.position.x,
+          z: snapshot.position.z,
+            noise: snapshot.noise,
+            speed: snapshot.speed,
+            flashlight: snapshot.flashlight,
+            hidden: snapshot.hidden,
+            exposure: snapshot.exposure,
+            crouching: snapshot.crouching,
+            yaw: snapshot.yaw,
+          alive: snapshot.alive,
+          playing: snapshot.playing,
+        });
+      }
+      let detected = null;
+      let watchedByAny = false;
+      for (const candidate of candidates) {
+        if (!candidate.alive || !candidate.playing) continue;
+        const deltaX = candidate.x - entity.position.x;
+        const deltaZ = candidate.z - entity.position.z;
+        const candidateDistance = Math.hypot(deltaX, deltaZ);
+        const inverseDistance = 1 / Math.max(0.001, candidateDistance);
+        const forwardDot = Math.sin(entity.rotation.y) * deltaX * inverseDistance
+          + Math.cos(entity.rotation.y) * deltaZ * inverseDistance;
+        const candidateCell = maze.worldToCell(candidate.x, candidate.z);
+        const shadowed = fixtureStates[candidateCell]?.broken || worldLightReliability < 0.3;
+        const hidden = Boolean(
+          candidate.hidden
+          && shadowed
+          && !candidate.flashlight
+          && candidate.noise < 0.16
+          && candidate.speed < 0.18
+        );
+        const exposure = hidden
+          ? 0.06
+          : candidate.flashlight
+            ? 1
+            : candidate.crouching
+              ? 0.3
+              : shadowed
+                ? 0.22
+                : 0.68;
+        const perception = perceptionProfile({ ...candidate, hidden });
+        const sightConfig = level.monster.behavior?.sight || {};
+        const configuredRange = Number(sightConfig.range) || 23;
+        const sightRange = hidden
+          ? perception.sightRange
+          : configuredRange * (candidate.flashlight ? 1.12 : candidate.crouching ? 0.72 : 1);
+        const sight = candidateDistance < sightRange
+          && (forwardDot > (Number(sightConfig.peripheralDot) || 0.24) || candidateDistance < (hidden ? 3.4 : 4.5))
+          && hasClearLine(entity.position.x, entity.position.z, candidate.x, candidate.z);
+        const toEntityX = entity.position.x - candidate.x;
+        const toEntityZ = entity.position.z - candidate.z;
+        const gazeDot = Math.sin(candidate.yaw || 0) * toEntityX * inverseDistance
+          + Math.cos(candidate.yaw || 0) * toEntityZ * inverseDistance;
+        const watched = candidateDistance < 24
+          && gazeDot > 0.965
+          && hasClearLine(candidate.x, candidate.z, entity.position.x, entity.position.z);
+        if (watched) watchedByAny = true;
+        let heard = false;
+        let routeDistance = Infinity;
+        if (candidate.noise > 0.1) {
+          routeDistance = maze.shortestPath(entityCell, candidateCell).length - 1;
+          const hearingConfig = level.monster.behavior?.hearing || {};
+          const hearingRange = (Number(hearingConfig.baseCells) || 2)
+            + Math.round(candidate.noise * (Number(hearingConfig.noiseCells) || 9));
+          heard = routeDistance >= 0 && routeDistance <= hearingRange;
+        }
+        if (!sight && !heard) continue;
+        const score = (sight ? 120 - candidateDistance * 2 : 54 - routeDistance * 2)
+          + candidate.noise * 18
+          + perception.scoreBias
+          + (candidate.id === entityTargetPlayerId ? 7 : 0);
+        if (!detected || score > detected.score) detected = {
+          ...candidate,
+          cell: candidateCell,
+          distance: candidateDistance,
+          sight,
+          heard,
+          watched,
+          hidden,
+          exposure,
+          awarenessRate: perception.awarenessRate,
+          score,
+        };
+      }
+      entitySightContact = Boolean(detected?.sight);
+      entityHeardPlayer = Boolean(detected?.heard);
+      if (detected) {
+        entityTargetPlayerId = detected.id;
+        entityTargetPlayerX = detected.x;
+        entityTargetPlayerZ = detected.z;
+        entityTargetPlayerNoise = detected.noise;
+        entityTargetHidden = detected.hidden;
+        entityTargetExposure = detected.exposure;
+        entityTargetAwarenessRate = detected.awarenessRate;
+        focusDistance = detected.distance;
+        focusCell = detected.cell;
+      }
+      entityTargetWatched = watchedByAny || elapsed < flashWatchUntil;
       entityPerceptionUpdate = 0.12;
     }
+    const sightAcquireRate = Number(level.monster.behavior?.sight?.acquireRate) || 1.4;
+    entityAwareness = clamp(
+      entityAwareness + dt * (
+        entitySightContact
+          ? sightAcquireRate
+            * entityTargetAwarenessRate
+            * lerp(0.3, 1.15, clamp(entityTargetExposure, 0, 1))
+            + entityTargetPlayerNoise * 0.9
+          : -0.62
+      ),
+      0,
+      1,
+    );
+    entityCanSeePlayer = entitySightContact
+      && entityAwareness > (Number(level.monster.behavior?.sight?.threshold) || 0.42);
+    if (entityCanSeePlayer || entityHeardPlayer) entityLastKnownCell = focusCell;
 
     if (entityMode === 'glimpse') {
-      if (lookingAtEntity) entitySeenFor += dt;
-      animateMonster(entity, { time: elapsed, speed: 0, mode: 'glimpse', distance });
+      if (lookingAtEntity || entityTargetWatched) entitySeenFor += dt;
+      animateMonster(entity, { time: elapsed - entityAnimationStart, speed: 0, mode: 'glimpse', distance });
       if (elapsed > entityUntil || entitySeenFor > 0.52 || distance < 3.5) {
         entityMode = 'stalk';
         entityUntil = elapsed + level.monster.timing.stalkDuration;
@@ -1744,55 +3791,86 @@ async function init() {
     if (
       entityMode === 'stalk'
       && (
-        (entityCanSeePlayer && distance < level.monster.stalkTriggerDistance)
-        || (entityHeardPlayer && playerNoise > 0.78)
-        || elapsed > entityUntil
+        (entityCanSeePlayer && focusDistance < level.monster.stalkTriggerDistance)
+        || (entityHeardPlayer && entityTargetPlayerNoise > (Number(level.monster.behavior?.hearing?.chaseNoise) || 0.78))
       )
     ) {
       entityMode = 'chase';
       showMessage('RUN', 0.72);
       audio.impact();
       flickerUntil = elapsed + 2.2;
+    } else if (entityMode === 'stalk' && elapsed > entityUntil) {
+      entityMode = 'search';
+      entityUntil = elapsed + 7 + random() * 4;
+      entityPathUpdate = 0;
     }
 
     if (entityMode === 'chase') {
       if (entityCanSeePlayer) entityLostSight = 0;
-      else entityLostSight += dt;
-      if (entityLostSight > 5.5 && !entityHeardPlayer) {
+      else entityLostSight += dt * (entityTargetHidden ? 1.75 : 1);
+      if (entityLostSight > (Number(level.monster.behavior?.chase?.lostSightDelay) || 5.5) && !entityHeardPlayer) {
         entityMode = 'search';
-        entityUntil = elapsed + 8 + random() * 5;
+        entityUntil = elapsed + randomBetween(
+          level.monster.behavior?.chase?.searchDuration || [8, 13],
+          random,
+        );
         entityPathUpdate = 0;
       }
     } else if (entityMode === 'search') {
-      if (entityCanSeePlayer || (entityHeardPlayer && playerNoise > 0.45)) {
+      if (
+        entityCanSeePlayer
+        || (entityHeardPlayer && entityTargetPlayerNoise > (Number(level.monster.behavior?.hearing?.reacquireNoise) || 0.45))
+      ) {
         entityMode = 'chase';
         entityLostSight = 0;
         showMessage('IT FOUND YOU', 0.5);
       } else if (elapsed > entityUntil) {
         hideEntity();
-        nextChase = elapsed + 18 + random() * 18;
+        nextChase = elapsed + randomBetween(
+          level.monster.behavior?.chase?.recovery || [14, 22],
+          random,
+        );
+        huntRecoveryUntil = nextChase;
         return Infinity;
       }
     }
 
     entityPathUpdate -= dt;
     if (entityPathUpdate <= 0) {
-      if (entityMode === 'stalk' && !entityCanSeePlayer && !entityHeardPlayer && entityPathIndex >= entityPath.length - 1) {
-        entityLastKnownCell = maze.randomCellAtDistance(entityCell, 2, 6, random);
+      const entityCellCenter = maze.cellToWorld(entityCell);
+      const nearCellCenter = Math.hypot(
+        entity.position.x - entityCellCenter.x,
+        entity.position.z - entityCellCenter.z,
+      ) < 0.52;
+      if (!nearCellCenter && entityPath.length > 1 && entityPathIndex < entityPath.length) {
+        entityPathUpdate = 0.08;
+      } else {
+        if (
+          (entityMode === 'stalk' || entityMode === 'search')
+          && !entityCanSeePlayer
+          && !entityHeardPlayer
+          && entityPathIndex >= entityPath.length - 1
+        ) {
+          entityLastKnownCell = maze.randomCellAtDistance(
+            entityCell,
+            ...(level.monster.behavior?.wanderCells || [2, 6]),
+            random,
+          );
+        }
+        entityPath = maze.shortestPath(entityCell, entityLastKnownCell);
+        entityPathIndex = Math.min(1, entityPath.length - 1);
+        entityPathUpdate = entityMode === 'chase'
+          ? level.monster.timing.pathRefresh.chase
+          : entityMode === 'search'
+            ? 0.5
+            : level.monster.timing.pathRefresh.stalk;
       }
-      entityPath = maze.shortestPath(entityCell, entityLastKnownCell);
-      entityPathIndex = Math.min(1, entityPath.length - 1);
-      entityPathUpdate = entityMode === 'chase'
-        ? level.monster.timing.pathRefresh.chase
-        : entityMode === 'search'
-          ? 0.5
-          : level.monster.timing.pathRefresh.stalk;
     }
 
     let targetSpeed = 0;
     if (entityPath.length) {
       const target = entityCell === entityLastKnownCell && (entityCanSeePlayer || entityHeardPlayer)
-        ? entityTarget.set(playerPosition.x, 0, playerPosition.y)
+        ? entityTarget.set(entityTargetPlayerX, 0, entityTargetPlayerZ)
         : entityPath.length > 1 && entityPathIndex < entityPath.length
           ? maze.cellToWorld(entityPath[entityPathIndex])
           : entityTarget.copy(maze.cellToWorld(entityLastKnownCell));
@@ -1806,36 +3884,96 @@ async function init() {
           ? level.monster.speeds.chase
           : entityMode === 'search'
             ? level.monster.speeds.stalk * 1.14
-            : lookingAtEntity
+            : entityTargetWatched
               ? level.monster.speeds.watched
               : level.monster.speeds.stalk;
         entityCurrentSpeed = lerp(entityCurrentSpeed, targetSpeed, 1 - Math.exp(-4.5 * dt));
         const movement = Math.min(entityCurrentSpeed * dt, targetDistance);
-        entity.position.addScaledVector(direction, movement);
         const targetYaw = Math.atan2(direction.x, direction.z);
         const yawDelta = Math.atan2(Math.sin(targetYaw - entity.rotation.y), Math.cos(targetYaw - entity.rotation.y));
         entity.rotation.y += yawDelta * Math.min(1, dt * (entityMode === 'chase' ? 8 : 4.5));
-        entityStepDistance += movement;
+        const alignment = clamp(Math.cos(yawDelta), 0, 1);
+        entity.position.x += Math.sin(entity.rotation.y) * movement * alignment;
+        entity.position.z += Math.cos(entity.rotation.y) * movement * alignment;
+        resolveEntityCollision();
       }
     }
 
     if (targetSpeed === 0) entityCurrentSpeed = lerp(entityCurrentSpeed, 0, 1 - Math.exp(-7 * dt));
     entity.position.y = 0;
+    const actualMovement = Math.hypot(
+      entity.position.x - entityFrameStartX,
+      entity.position.z - entityFrameStartZ,
+    );
+    if (targetSpeed > 0.05 && actualMovement < 0.0015) entityStuckTime += dt;
+    else entityStuckTime = Math.max(0, entityStuckTime - dt * 2);
+    if (entityStuckTime > 0.72) {
+      entityPathIndex = Math.min(entityPathIndex + 1, Math.max(0, entityPath.length - 1));
+      entityPathUpdate = 0;
+      entityStuckTime = 0;
+      entity.rotation.y += (random() - 0.5) * 0.7;
+    }
+    const actualSpeed = clamp(
+      actualMovement / Math.max(0.001, dt),
+      0,
+      level.monster.speeds.chase * 1.2,
+    );
+    entityActualSpeed = actualSpeed;
+    entityStepDistance += actualMovement;
     const updatedDistance = Math.hypot(entity.position.x - playerPosition.x, entity.position.z - playerPosition.y);
     const soundPan = clamp(rightDirection.dot(entityVector), -1, 1);
-    const monsterStride = entityMode === 'chase' ? 1.15 : 1.72;
+    const monsterStride = entityMode === 'chase' ? 0.9 : 0.72;
     if (entityStepDistance >= monsterStride) {
-      entityStepDistance = 0;
+      entityStepDistance -= monsterStride;
       audio.monsterStep(soundPan, updatedDistance, entityMode === 'chase');
     }
     animateMonster(entity, {
-      time: elapsed,
-      speed: entityCurrentSpeed,
+      time: elapsed - entityAnimationStart,
+      speed: actualSpeed,
       mode: updatedDistance < 1.8 ? 'attack' : entityMode,
       distance: updatedDistance,
     });
-    entityPreviousPosition.copy(entity.position);
-    if (updatedDistance < level.monster.catchDistance) die();
+    if (
+      localAlive
+      && gameState === 'playing'
+      && updatedDistance < level.monster.catchDistance
+      && hasClearLine(entity.position.x, entity.position.z, playerPosition.x, playerPosition.y)
+    ) die();
+    if (multiplayerActive && multiplayer.isHost && performance.now() - lastKillIntentAt > 900) {
+      for (const snapshot of remoteNetworkPlayers.values()) {
+        if (
+          !snapshot.alive
+          || !snapshot.playing
+          || performance.now() - snapshot.receivedAt > 750
+          || killedRemotePlayers.has(snapshot.id)
+          || pendingRemoteKills.has(snapshot.id)
+        ) continue;
+        const remoteDistance = Math.hypot(
+          entity.position.x - snapshot.position.x,
+          entity.position.z - snapshot.position.z,
+        );
+        if (
+          remoteDistance >= level.monster.catchDistance
+          || !hasClearLine(entity.position.x, entity.position.z, snapshot.position.x, snapshot.position.z)
+        ) continue;
+        lastKillIntentAt = performance.now();
+        pendingRemoteKills.add(snapshot.id);
+        multiplayer.sendGameEvent({
+          action: 'player-killed',
+          state: { playerId: snapshot.id, monsterMode: entityMode },
+        }).then(() => {
+          killedRemotePlayers.add(snapshot.id);
+          snapshot.alive = false;
+          snapshot.visible = false;
+          remotePlayers.upsert({ ...snapshot, visible: false, speed: 0 });
+        }).catch(() => {
+          showMessage('KILL SIGNAL LOST', 0.55);
+        }).finally(() => {
+          pendingRemoteKills.delete(snapshot.id);
+        });
+        break;
+      }
+    }
     return updatedDistance;
   }
 
@@ -1844,7 +3982,12 @@ async function init() {
     if (type === 0) {
       flickerUntil = elapsed + 1.2 + random() * 1.3;
       audio.powerDip(elapsed, 0.7 + random() * 0.8);
-    } else if (type === 1 && entityMode === 'hidden' && placeEntity('glimpse')) {
+    } else if (
+      type === 1
+      && entityMode === 'hidden'
+      && elapsed >= huntRecoveryUntil
+      && placeEntity('glimpse')
+    ) {
       audio.scare(random() > 0.5 ? -0.75 : 0.75);
     } else if (type === 2) {
       audio.scare(random() * 2 - 1);
@@ -1856,52 +3999,272 @@ async function init() {
     nextScare = elapsed + randomBetween(level.monster.timing.scareInterval, random);
   }
 
+  function hydrateMonsterAuthority() {
+    const state = networkMonsterState;
+    if (!state) {
+      hideEntity();
+      publishMonsterState(true);
+      return;
+    }
+    const targetX = Number(state.x ?? state.position?.x);
+    const targetZ = Number(state.z ?? state.position?.z);
+    if (Number.isFinite(targetX) && Number.isFinite(targetZ)) entity.position.set(targetX, 0, targetZ);
+    if (Number.isFinite(Number(state.yaw))) entity.rotation.y = Number(state.yaw);
+    entityMode = String(state.mode || 'hidden');
+    entity.visible = state.visible !== false && entityMode !== 'hidden';
+    entityCurrentSpeed = Math.max(0, Number(state.speed) || 0);
+    entityActualSpeed = entityCurrentSpeed;
+    entityAwareness = clamp(Number(state.awareness) || 0, 0, 1);
+    entityLostSight = Math.max(0, Number(state.lostSight) || 0);
+    entityLastKnownCell = Number.isFinite(Number(state.lastKnownCell))
+      ? clamp(Math.trunc(Number(state.lastKnownCell)), 0, maze.cells.length - 1)
+      : maze.worldToCell(entity.position.x, entity.position.z);
+    entityAnimationStart = elapsed - Math.max(0, Number(state.animationTime) || 0);
+    const safeDuration = entityMode === 'glimpse'
+      ? level.monster.timing.glimpseDuration
+      : entityMode === 'search'
+        ? 8
+        : level.monster.timing.stalkDuration;
+    entityUntil = entityMode === 'chase'
+      ? Infinity
+      : elapsed + Math.max(0.8, Number(state.modeRemaining) || safeDuration);
+    nextScare = state.nextScareRemaining !== null
+      && state.nextScareRemaining !== undefined
+      && Number.isFinite(Number(state.nextScareRemaining))
+      ? elapsed + Math.max(0.8, Number(state.nextScareRemaining))
+      : elapsed + randomBetween(level.monster.timing.scareInterval, random);
+    nextChase = state.nextChaseRemaining !== null
+      && state.nextChaseRemaining !== undefined
+      && Number.isFinite(Number(state.nextChaseRemaining))
+      ? elapsed + Math.max(0.8, Number(state.nextChaseRemaining))
+      : entityMode === 'hidden'
+        ? elapsed + 3
+        : Infinity;
+    const recoveryRemaining = Number(state.recoveryRemaining);
+    huntRecoveryUntil = entityMode === 'hidden'
+      && Number.isFinite(recoveryRemaining)
+      && recoveryRemaining > 0
+      ? elapsed + recoveryRemaining
+      : 0;
+    entityTargetPlayerId = state.targetPlayerId === multiplayer.self?.id
+      ? 'local'
+      : String(state.targetPlayerId || 'local');
+    const tracked = entityTargetPlayerId === 'local'
+      ? null
+      : remoteNetworkPlayers.get(entityTargetPlayerId);
+    if (tracked?.alive) {
+      entityTargetPlayerX = tracked.position.x;
+      entityTargetPlayerZ = tracked.position.z;
+      entityTargetPlayerNoise = tracked.noise;
+    } else {
+      entityTargetPlayerId = 'local';
+      entityTargetPlayerX = playerPosition.x;
+      entityTargetPlayerZ = playerPosition.y;
+      entityTargetPlayerNoise = playerNoise;
+    }
+    entityPath = [];
+    entityPathIndex = 0;
+    entityPathUpdate = 0;
+    entityPerceptionUpdate = 0;
+    entitySeenFor = 0;
+    entityStepDistance = 0;
+    monsterPublishSignature = '';
+    publishMonsterState(true);
+  }
+
+  function publishMonsterState(force = false) {
+    if (
+      !multiplayerActive
+      || !multiplayer.isHost
+      || !multiplayer.isConnected
+      || roomNavigationPending
+    ) return;
+    const now = performance.now();
+    const cadence = entityMode === 'hidden' ? 800 : entityActualSpeed < 0.05 ? 220 : 90;
+    if (monsterPublishPending || (!force && now - lastMonsterNetworkUpdate < cadence)) return;
+    const state = {
+      visible: entity.visible,
+      mode: entityMode,
+      x: entity.position.x,
+      z: entity.position.z,
+      yaw: entity.rotation.y,
+      speed: entityActualSpeed,
+      awareness: entityAwareness,
+      animationTime: elapsed - entityAnimationStart,
+      targetPlayerId: entityTargetPlayerId === 'local' ? multiplayer.self?.id : entityTargetPlayerId,
+      lastKnownCell: entityLastKnownCell,
+      lostSight: entityLostSight,
+      modeRemaining: Number.isFinite(entityUntil) ? Math.max(0, entityUntil - elapsed) : null,
+      nextScareRemaining: Number.isFinite(nextScare) ? Math.max(0, nextScare - elapsed) : null,
+      nextChaseRemaining: Number.isFinite(nextChase) ? Math.max(0, nextChase - elapsed) : null,
+      recoveryRemaining: Math.max(0, huntRecoveryUntil - elapsed),
+    };
+    const signature = [
+      state.visible,
+      state.mode,
+      Math.round(state.x * 20),
+      Math.round(state.z * 20),
+      Math.round(state.yaw * 40),
+      Math.round(state.speed * 20),
+      Math.round(state.awareness * 10),
+      state.targetPlayerId,
+      state.lastKnownCell,
+    ].join('|');
+    if (!force && signature === monsterPublishSignature && now - monsterPublishSucceededAt < 1200) return;
+    lastMonsterNetworkUpdate = now;
+    monsterPublishPending = true;
+    multiplayer.sendMonsterEvent({
+      action: 'state',
+      state,
+    }).then(() => {
+      monsterPublishSignature = signature;
+      monsterPublishSucceededAt = performance.now();
+    }).catch(() => {}).finally(() => {
+      monsterPublishPending = false;
+    });
+  }
+
   function updateDirector(dt) {
     const doorDistance = camera.position.distanceTo(exitGroup.position);
-    const entityDistance = updateEntity(dt);
+    const networkGuest = multiplayerActive && !multiplayer.isHost;
+    const entityDistance = networkGuest ? updateNetworkEntity(dt) : updateEntity(dt);
+    const nearTeammate = [...remoteNetworkPlayers.values()].some((snapshot) => (
+      snapshot.alive
+      && snapshot.playing
+      && Math.hypot(snapshot.position.x - playerPosition.x, snapshot.position.z - playerPosition.y) < 13
+    ));
+    const localPursuit = entityMode === 'chase' && (
+      !multiplayerActive
+      || (multiplayer.isHost
+        ? entityTargetPlayerId === 'local'
+        : networkMonsterState?.targetPlayerId === multiplayer.self?.id)
+    );
+    fear = stepFear(fear, dt, {
+      monsterMode: entityMode,
+      entityDistance,
+      awareness: entityAwareness,
+      flashlightOn,
+      reliableLight: playerInReliableLight,
+      charge: flashlightCharge,
+      nearTeammate,
+      hidden: playerHidden,
+      pursuitFocused: entityMode !== 'chase' || localPursuit,
+    });
+    const immediateDanger = Number.isFinite(entityDistance)
+      ? clamp(1 - entityDistance / 24, 0, 1) * 0.54
+      : 0;
+    const modePressure = entityMode === 'chase'
+      ? (localPursuit ? 0.34 : 0.08)
+      : entityMode === 'search'
+        ? 0.18
+        : entityMode === 'stalk' || entityMode === 'glimpse'
+          ? 0.1
+          : 0;
+    const objectivePressure = objectiveTotal > 0 ? (objectivesCompleted / objectiveTotal) * 0.08 : 0;
     tension = clamp(
-      elapsed / 115
-        + (Number.isFinite(entityDistance) ? clamp(1 - entityDistance / 24, 0, 1) * 0.56 : 0)
+      immediateDanger
+        + modePressure
+        + fear * 0.34
+        + objectivePressure
         + (doorDistance < 16 ? 0.06 : 0),
       0,
       1,
     );
 
-    if (elapsed > nextScare && entityMode !== 'chase') triggerScare();
-    if (elapsed > nextChase && entityMode === 'hidden') {
-      placeEntity('stalk');
-      nextChase = Infinity;
-      audio.scare(0);
+    const atmosphereEvents = atmosphereDirector.update({
+      elapsed,
+      tension,
+      monsterMode: entityMode,
+      moving: playerActualSpeed > 0.25,
+      objectivesCompleted,
+      objectiveTotal,
+    });
+    for (const event of atmosphereEvents) {
+      if (event.message) showMessage(event.message, event.duration);
+      if (Number(event.effect?.flicker) > 0) {
+        flickerUntil = Math.max(flickerUntil, elapsed + Number(event.effect.flicker));
+      }
+      if (Number(event.effect?.silence) > 0) audio.powerDip(elapsed, Number(event.effect.silence));
+      if (!reducedMotion && Number(event.effect?.glitch) > 0) {
+        glitchUntil = Math.max(glitchUntil, elapsed + Number(event.effect.glitch));
+      }
+      if (event.cue) audio.ambientCue(event.cue, event.pan, event.intensity);
     }
+    dom.game.classList.toggle('is-glitching', !reducedMotion && elapsed < glitchUntil);
 
-    const flickering = elapsed < flickerUntil;
+    if (!networkGuest && elapsed > nextScare && entityMode !== 'chase') triggerScare();
+    if (!networkGuest && elapsed > nextChase && entityMode === 'hidden') {
+      if (placeEntity('stalk')) {
+        nextChase = Infinity;
+        audio.scare(0);
+      } else nextChase = elapsed + 3 + random() * 3;
+    }
+    if (!networkGuest) publishMonsterState();
+
+    const flickering = !reducedMotion && elapsed < flickerUntil;
     let lightMultiplier = 1;
     if (flickering) {
-      const intensity = reducedMotion ? 0.62 : random();
-      lightMultiplier = intensity > 0.36 ? 0.65 + intensity * 0.35 : 0.035;
+      const intensity = cosmeticRandom();
+      const faultFloor = Number(level.lighting.fixture.flicker?.faultFloor) || 0.025;
+      lightMultiplier = intensity > 0.36 ? 0.65 + intensity * 0.35 : faultFloor;
     }
+    const proximityCorruption = Number.isFinite(entityDistance)
+      ? clamp(1 - entityDistance / 11, 0, 1) * (entityMode === 'chase' ? 0.44 : 0.22)
+      : 0;
+    lightMultiplier *= 1 - proximityCorruption * (0.72 + Math.sin(elapsed * 13.7) * 0.18);
+    worldLightReliability = lightMultiplier;
+    if (elapsed < remoteFlashUntil) {
+      const remaining = clamp((remoteFlashUntil - elapsed) / (reducedMotion ? 0.08 : 0.22), 0, 1);
+      remoteFlashLight.visible = true;
+      remoteFlashLight.intensity = (reducedMotion ? 18 : 92) * remaining;
+    } else remoteFlashLight.visible = false;
+    const idleFlicker = level.lighting.fixture.flicker || {};
     lightPool.forEach((light, index) => {
       const phase = fixtureStates[light.userData.cell || 0]?.phase || 0;
-      const wobble = 0.94 + Math.sin(elapsed * 4.2 + phase) * 0.035;
+      const wobble = 0.95 + Math.sin(
+        elapsed * (Number(idleFlicker.idleRate) || 4.2) + phase,
+      ) * (Number(idleFlicker.idleDepth) || 0.035);
       light.intensity = level.lighting.fixture.intensity * lightMultiplier * wobble * (index === 0 ? 1.08 : 0.92);
     });
     panelMaterial.emissiveIntensity = 3.1 * (flickering ? Math.max(0.08, lightMultiplier) : 1);
     renderer.toneMappingExposure = lerp(
       renderer.toneMappingExposure,
-      level.lighting.exposure * (flickering ? 0.62 + lightMultiplier * 0.38 : 1),
+      level.lighting.exposure
+        * (flickering ? 0.62 + lightMultiplier * 0.38 : 1)
+        * (playerHidden ? 0.72 : 1),
       0.18,
     );
     dom.threat.style.opacity = String(clamp((tension - 0.38) * 0.8, 0, 0.48));
+    dom.grain.style.opacity = reducedMotion ? '0.035' : String(0.068 + fear * 0.075);
+    if (!reducedMotion) {
+      const targetFov = 70
+        + fear * 1.8
+        + (localPursuit ? 3.4 : 0)
+        + Math.sin(elapsed * 2.1) * fear * 0.42;
+      const nextFov = lerp(camera.fov, targetFov, 1 - Math.exp(-4 * dt));
+      if (Math.abs(nextFov - camera.fov) > 0.005) {
+        camera.fov = nextFov;
+        camera.updateProjectionMatrix();
+      }
+    }
     audio.update(tension, elapsed, Number.isFinite(entityDistance) ? {
       distance: entityDistance,
       pan: clamp(rightDirection.dot(entityVector), -1, 1),
       mode: entityMode,
     } : null);
 
-    if (entityMode === 'chase') dom.status.textContent = 'PURSUIT DETECTED';
+    if (playerHidden) dom.status.textContent = 'UNSEEN / DO NOT MOVE';
+    else if (localPursuit) dom.status.textContent = 'PURSUIT DETECTED';
+    else if (entityMode === 'chase') dom.status.textContent = 'A TEAMMATE IS RUNNING';
     else if (entityMode === 'search') dom.status.textContent = 'MOVEMENT NEARBY';
-    else if (elapsed > 35) dom.status.textContent = 'SIGNAL UNSTABLE';
+    else if (huntRecoveryUntil > elapsed) dom.status.textContent = 'THE HUM HAS RETURNED';
+    else if (fear > 0.62) dom.status.textContent = 'SIGNAL UNSTABLE';
     else dom.status.textContent = level.copy.status;
+    dom.game.dataset.monsterMode = entityMode;
+    dom.game.dataset.monsterDistance = Number.isFinite(entityDistance) ? entityDistance.toFixed(2) : 'hidden';
+    dom.game.dataset.monsterAwareness = entityAwareness.toFixed(2);
+    dom.game.dataset.fear = fear.toFixed(3);
+    dom.game.dataset.recovery = Math.max(0, huntRecoveryUntil - elapsed).toFixed(2);
     if (elapsed > 7 && objectiveTotal === 0) dom.objective.style.opacity = '0';
   }
 
@@ -1912,7 +4275,21 @@ async function init() {
     const playerCell = maze.worldToCell(playerPosition.x, playerPosition.y);
     currentInteraction = null;
 
+    for (const item of evidenceItems) {
+      if (item.userData.collected || item.userData.cellIndex !== playerCell) continue;
+      const delta = entityTarget.copy(item.position).sub(camera.position);
+      delta.y = 0;
+      const distance = delta.length();
+      if (distance > 1.85) continue;
+      delta.normalize();
+      if (worldDirection.dot(delta) > 0.38) {
+        currentInteraction = { type: 'evidence', item };
+        break;
+      }
+    }
+
     for (const item of objectiveItems) {
+      if (currentInteraction) break;
       if (item.userData.activated || item.userData.cellIndex !== playerCell) continue;
       const delta = entityTarget.copy(item.position).sub(camera.position);
       delta.y = 0;
@@ -1939,37 +4316,167 @@ async function init() {
     } else nearExit = false;
 
     const interactionVisible = Boolean(currentInteraction);
-    if (currentInteraction?.type === 'objective') {
+    if (heldInteraction) {
+      const percent = Math.round(heldInteraction.progress * 100);
+      dom.interact.textContent = `HOLD E  ${percent}%`;
+      dom.touchAction.textContent = `HOLD ${percent}%`;
+    } else if (currentInteraction?.type === 'evidence') {
+      dom.interact.textContent = 'E  PLAY ARCHIVE';
+      dom.touchAction.textContent = 'PLAY';
+    } else if (currentInteraction?.type === 'objective') {
       dom.interact.textContent = level.objective.labels.interact;
       dom.touchAction.textContent = 'USE';
     } else if (currentInteraction?.locked) {
       dom.interact.textContent = 'E  CHECK LOCK';
       dom.touchAction.textContent = 'CHECK';
     } else {
-      dom.interact.textContent = level.objective.labels.interact || 'E  OPEN';
+      dom.interact.textContent = 'E  OPEN';
       dom.touchAction.textContent = 'OPEN';
     }
     dom.interact.classList.toggle('is-visible', interactionVisible);
     dom.touchAction.classList.toggle('is-visible', interactionVisible);
   }
 
+  function completeObjectiveInteraction(item) {
+    if (!item || item.userData.activated) return;
+    noiseImpulse = Math.max(noiseImpulse, 1.55);
+    const objectiveId = objectiveIdFor(item);
+    if (multiplayerActive && !multiplayer.isHost) {
+      currentInteraction = null;
+      showMessage('SENDING SIGNAL', 0.55);
+      multiplayer.sendObjectiveIntent({
+        objectiveId,
+        action: 'activate',
+        state: {
+          cellIndex: item.userData.cellIndex,
+          position: { x: playerPosition.x, z: playerPosition.y },
+          noise: noiseImpulse,
+        },
+      }).catch(() => showMessage('SIGNAL LOST', 0.7));
+      return;
+    }
+    const activated = activateObjectiveById(objectiveId);
+    if (activated && multiplayerActive) {
+      multiplayer.sendObjectiveEvent({
+        objectiveId,
+        action: 'activate',
+        state: { cellIndex: item.userData.cellIndex },
+      }).catch(() => {
+        showMessage('ROOM SYNC FAILED', 0.7);
+        recoverRoomSnapshot();
+      });
+    }
+    currentInteraction = null;
+  }
+
+  function cancelHeldInteraction() {
+    const canceled = heldInteraction;
+    heldInteraction = null;
+    interactionHeld = false;
+    dom.interact.classList.remove('is-holding');
+    dom.interact.style.removeProperty('--hold-progress');
+    dom.game.dataset.interactionProgress = '0';
+    if (canceled && multiplayerActive && !multiplayer.isHost) {
+      multiplayer.sendObjectiveIntent({
+        objectiveId: objectiveIdFor(canceled.item),
+        action: 'cancel-activate',
+        state: { cellIndex: canceled.item.userData.cellIndex },
+      }).catch(() => {});
+    }
+  }
+
+  function beginInteraction() {
+    if (!currentInteraction || gameState !== 'playing') return;
+    if (currentInteraction.type !== 'objective') {
+      interact();
+      return;
+    }
+    if (heldInteraction || currentInteraction.item.userData.activated) return;
+    interactionHeld = true;
+    heldInteraction = {
+      item: currentInteraction.item,
+      progress: 0,
+      duration: currentInteraction.item.userData.type === 'valve' ? 1.8 : 1.2,
+      startX: playerPosition.x,
+      startZ: playerPosition.y,
+    };
+    if (multiplayerActive && !multiplayer.isHost) {
+      multiplayer.sendObjectiveIntent({
+        objectiveId: objectiveIdFor(currentInteraction.item),
+        action: 'begin-activate',
+        state: {
+          cellIndex: currentInteraction.item.userData.cellIndex,
+          position: { x: playerPosition.x, z: playerPosition.y },
+        },
+      }).catch(() => showMessage('INTERACTION SIGNAL LOST', 0.7));
+    }
+    dom.interact.classList.add('is-holding');
+  }
+
+  function endInteraction() {
+    interactionHeld = false;
+    if (heldInteraction) cancelHeldInteraction();
+  }
+
+  function updateHeldInteraction(dt) {
+    if (!heldInteraction) return;
+    const moved = Math.hypot(
+      playerPosition.x - heldInteraction.startX,
+      playerPosition.y - heldInteraction.startZ,
+    ) > 0.34;
+    if (
+      !interactionHeld
+      || moved
+      || currentInteraction?.type !== 'objective'
+      || currentInteraction.item !== heldInteraction.item
+      || heldInteraction.item.userData.activated
+    ) {
+      cancelHeldInteraction();
+      return;
+    }
+    heldInteraction.progress = clamp(heldInteraction.progress + dt / heldInteraction.duration, 0, 1);
+    noiseImpulse = Math.max(noiseImpulse, 0.34 + heldInteraction.progress * 1.16);
+    dom.interact.style.setProperty('--hold-progress', String(heldInteraction.progress));
+    dom.game.dataset.interactionProgress = heldInteraction.progress.toFixed(2);
+    if (heldInteraction.progress >= 1) {
+      const item = heldInteraction.item;
+      heldInteraction = null;
+      interactionHeld = false;
+      dom.interact.classList.remove('is-holding');
+      dom.interact.style.removeProperty('--hold-progress');
+      dom.game.dataset.interactionProgress = '0';
+      completeObjectiveInteraction(item);
+    }
+  }
+
   function interact() {
     if (!currentInteraction || gameState !== 'playing') return;
     if (currentInteraction.type === 'objective') {
+      beginInteraction();
+      return;
+    }
+    if (currentInteraction.type === 'evidence') {
       const item = currentInteraction.item;
-      if (item.userData.activated) return;
-      item.userData.activated = true;
-      objectivesCompleted += 1;
-      playerNoise = 1.45;
-      audio.objectiveComplete();
-      updateObjectiveHud();
-      const progress = `${level.objective.labels.item} ${objectivesCompleted} / ${objectiveTotal}`;
-      showMessage(progress, 0.95);
-      flickerUntil = Math.max(flickerUntil, elapsed + 0.45);
-      if (objectivesCompleted >= objectiveTotal) {
-        exitSign.material.emissiveIntensity = 2.8;
-        showMessage(level.objective.labels.complete, 1.6);
-        audio.powerDip(elapsed, 0.5);
+      const evidenceId = evidenceIdFor(item);
+      if (multiplayerActive && !multiplayer.isHost) {
+        multiplayer.sendObjectiveIntent({
+          objectiveId: evidenceId,
+          action: 'collect',
+          state: {
+            cellIndex: item.userData.cellIndex,
+            position: { x: playerPosition.x, z: playerPosition.y },
+          },
+        }).catch(() => showMessage('ARCHIVE SIGNAL LOST', 0.65));
+        showMessage('RECOVERING ARCHIVE', 0.55);
+        return;
+      }
+      const collected = collectEvidenceById(evidenceId, { announce: true, grantCharge: true });
+      if (collected && multiplayerActive) {
+        multiplayer.sendObjectiveEvent({
+          objectiveId: evidenceId,
+          action: 'collect',
+          state: { cellIndex: item.userData.cellIndex, collectedBy: multiplayer.self?.id },
+        }).catch(() => recoverRoomSnapshot());
       }
       currentInteraction = null;
       return;
@@ -1977,7 +4484,19 @@ async function init() {
     if (currentInteraction.locked) {
       showMessage(level.objective.labels.locked, 1.2);
       audio.scare(0);
-      playerNoise = Math.max(playerNoise, 0.72);
+      noiseImpulse = Math.max(noiseImpulse, 0.72);
+      return;
+    }
+    if (multiplayerActive && !multiplayer.isHost) {
+      multiplayer.sendObjectiveIntent({
+        objectiveId: 'exit',
+        action: 'extract',
+        state: {
+          cellIndex: exitIndex,
+          position: { x: playerPosition.x, z: playerPosition.y },
+        },
+      }).catch(() => showMessage('SIGNAL LOST', 0.7));
+      showMessage('WAITING FOR EXTRACTION', 0.8);
       return;
     }
     win();
@@ -1986,7 +4505,11 @@ async function init() {
   function die() {
     if (ending) return;
     ending = true;
+    localAlive = false;
     gameState = 'dead';
+    persistFlashlightCharge();
+    dom.game.dataset.gameState = gameState;
+    if (multiplayerActive) sendLocalPlayerState(true);
     audio.impact();
     showMessage('IT HEARD YOU', 1.2);
     dom.threat.style.opacity = '0.88';
@@ -1999,10 +4522,27 @@ async function init() {
     }, 950);
   }
 
-  function win() {
+  function win({ broadcast = true } = {}) {
     if (ending) return;
+    if (broadcast && multiplayerActive) {
+      if (!multiplayer.isHost || levelCompletionPending) return;
+      levelCompletionPending = true;
+      multiplayer.sendGameEvent({
+        action: 'level-complete',
+        state: { level: levelIndex, completedAt: Date.now() },
+      }).catch(() => {
+        levelCompletionPending = false;
+        showMessage('ROOM SYNC FAILED', 0.7);
+        recoverRoomSnapshot();
+      });
+      return;
+    }
+    levelCompletionPending = false;
     ending = true;
     gameState = 'won';
+    persistFlashlightCharge();
+    dom.game.dataset.gameState = gameState;
+    if (multiplayerActive) sendLocalPlayerState(true);
     audio.powerDip(elapsed, 2);
     showMessage(levelIndex === LEVELS.length - 1 ? 'THE RECORDING ENDS' : 'THRESHOLD OPEN', 1.3);
     if (!mobile && controls.isLocked) controls.unlock();
@@ -2015,12 +4555,47 @@ async function init() {
 
   function beginPlay() {
     ending = false;
+    localAlive = true;
     gameState = 'playing';
+    waitingRoomPreview.dispose();
     hideOverlay();
     audio.resume();
     lastFrame = performance.now();
     clock.getDelta();
     dom.game.dataset.gameState = gameState;
+    sendLocalPlayerState(true);
+  }
+
+  function sendLocalPlayerState(force = false) {
+    if (!multiplayerActive || !multiplayer.isConnected || roomNavigationPending) return false;
+    const now = performance.now();
+    if (!force && now - lastPlayerNetworkUpdate < 66) return false;
+    lastPlayerNetworkUpdate = now;
+    return multiplayer.sendPlayerState({
+      name: localCallsign,
+      characterId: localCharacterId || undefined,
+      look: localLook,
+      ready: localReady,
+      position: { x: playerPosition.x, y: 0, z: playerPosition.y },
+      yaw: Math.atan2(
+        Math.sin(camera.rotation.y + Math.PI),
+        Math.cos(camera.rotation.y + Math.PI),
+      ),
+      pitch: camera.rotation.x,
+      speed: gameState === 'playing' ? playerActualSpeed : 0,
+      velocity: { x: velocity.x, z: velocity.y },
+      running: gameState === 'playing' && playerRunning,
+      crouching: playerCrouching,
+      noise: gameState === 'playing' ? playerNoise : 0,
+      hidden: gameState === 'playing' && playerHidden,
+      exposure: playerExposure,
+      alive: localAlive,
+      playing: gameState === 'playing',
+      authorityAvailable: gameState === 'playing' && !document.hidden,
+      flashlight: localAlive && flashlightOn,
+      visible: true,
+      cellIndex: maze.worldToCell(playerPosition.x, playerPosition.y),
+    });
   }
 
   function reduceQuality() {
@@ -2036,6 +4611,359 @@ async function init() {
     updateLights();
   }
 
+  multiplayer.on('status', ({ status }) => {
+    if (status === 'reconnecting' || status === 'resuming') {
+      if (multiplayerActive || multiplayer.roomCode) {
+        voiceChat.disable({ announce: false });
+        setLobbyStatus('SIGNAL LOST / RECONNECTING');
+        dom.status.textContent = 'CO-OP LINK UNSTABLE';
+      } else if (lobbyMode === 'rooms') {
+        setLobbyStatus('DIRECTORY SIGNAL LOST / RECONNECTING');
+        setDirectoryState('loading', 'RECONNECTING TO ROOM DIRECTORY');
+      }
+    } else if (status === 'replaced') {
+      voiceChat.disable({ announce: false });
+      multiplayerActive = false;
+      setLobbyStatus('ROOM OPEN IN ANOTHER TAB', 'error');
+      updateRoomHud();
+    } else if (status === 'joined' && multiplayer.roomCode) {
+      setLobbyStatus(`ROOM ${multiplayer.roomCode} / LINKED`, 'connected');
+    }
+  });
+
+  multiplayer.on('room:joined', ({ room }) => {
+    hydrateWaitingRoomState(room);
+    applyRoomSnapshot(room);
+  });
+  multiplayer.on('room:snapshot', ({ room }) => {
+    hydrateWaitingRoomState(room);
+    applyRoomSnapshot(room);
+  });
+  multiplayer.on('resumed', ({ room }) => {
+    hydrateWaitingRoomState(room);
+    multiplayerActive = true;
+    applyRoomSnapshot(room);
+    sendLocalPlayerState(true);
+    showMessage('SIGNAL RESTORED', 0.7);
+  });
+  multiplayer.on('reconnect:failed', ({ code }) => {
+    if (code) sessionStorage.removeItem(roomResumeKey(code));
+    multiplayerActive = false;
+    voiceChat.disable({ announce: false });
+    remoteNetworkPlayers.clear();
+    remotePlayers.clear();
+    networkMonsterState = null;
+    networkMonsterInitialized = false;
+    networkMonsterWasVisible = false;
+    setLobbyBusy(false);
+    updateRoomHud();
+    setLobbyStatus('ROOM RESUME FAILED', 'error');
+  });
+  multiplayer.on('player:joined', ({ player, resumed }) => {
+    if (resumed && player?.id) {
+      killedRemotePlayers.delete(String(player.id));
+      pendingRemoteKills.delete(String(player.id));
+    }
+    if (player?.state) upsertRemotePlayer(player);
+    updateRoomHud();
+    if (multiplayerActive && player?.name) showMessage(`${normalizeCallsign(player.name)} LINKED`, 0.62);
+  });
+  multiplayer.on('player:state', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    upsertRemotePlayer(payload);
+    if (gameState === 'start') updateWaitingRoom();
+  });
+  multiplayer.on('player:left', ({ playerId, voluntary }) => {
+    removeRemotePlayer(playerId);
+    for (const key of remoteInteractionStarts.keys()) {
+      if (key.startsWith(`${playerId}:`)) remoteInteractionStarts.delete(key);
+    }
+    remoteFlashCooldowns.delete(String(playerId));
+    updateRoomHud();
+    if (multiplayerActive) showMessage(voluntary ? 'A SIGNAL LEFT' : 'A SIGNAL WAS LOST', 0.62);
+  });
+  multiplayer.on('player:removed', ({ playerId }) => {
+    removeRemotePlayer(playerId);
+    for (const key of remoteInteractionStarts.keys()) {
+      if (key.startsWith(`${playerId}:`)) remoteInteractionStarts.delete(key);
+    }
+    remoteFlashCooldowns.delete(String(playerId));
+    updateRoomHud();
+  });
+  multiplayer.on('host:changed', ({ hostId }) => {
+    updateRoomHud();
+    if (multiplayerActive && hostId === multiplayer.self?.id) {
+      showMessage('YOU ARE THE HOST', 0.8);
+      hydrateMonsterAuthority();
+    } else if (multiplayerActive) showMessage('HOST SIGNAL MOVED', 0.65);
+  });
+
+  multiplayer.on('objective:intent', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    if (!multiplayerActive || !multiplayer.isHost) return;
+    const sender = remoteNetworkPlayers.get(String(payload.playerId));
+    if (!sender?.alive || !sender.playing) return;
+    const senderCell = maze.worldToCell(sender.position.x, sender.position.z);
+    const interactionKey = `${payload.playerId}:${payload.objectiveId}`;
+    if (payload.action === 'cancel-activate') {
+      remoteInteractionStarts.delete(interactionKey);
+      return;
+    }
+    if (payload.action === 'begin-activate') {
+      const item = objectiveFromId(payload.objectiveId);
+      if (!item || item.userData.activated || senderCell !== item.userData.cellIndex) return;
+      const distance = Math.hypot(sender.position.x - item.position.x, sender.position.z - item.position.z);
+      if (distance > 2.8) return;
+      remoteInteractionStarts.set(interactionKey, performance.now());
+      return;
+    }
+    if (payload.action === 'flash' && payload.objectiveId === 'entity') {
+      const position = payload.state?.position || {};
+      const direction = payload.state?.direction || {};
+      const flashAllowedAt = remoteFlashCooldowns.get(String(payload.playerId)) || 0;
+      if (
+        !Number.isFinite(Number(position.x))
+        || !Number.isFinite(Number(position.z))
+        || !Number.isFinite(Number(direction.x))
+        || !Number.isFinite(Number(direction.z))
+        || Math.hypot(Number(position.x) - sender.position.x, Number(position.z) - sender.position.z) > 1.6
+        || performance.now() < flashAllowedAt
+      ) return;
+      remoteFlashCooldowns.set(String(payload.playerId), performance.now() + 1_800);
+      sender.noise = Math.max(sender.noise, 1.75);
+      sender.noiseHoldUntil = performance.now() + 900;
+      applyCameraFlashAt(
+        sender.position.x,
+        sender.position.z,
+        Number(direction.x),
+        Number(direction.z),
+        false,
+      );
+      multiplayer.sendGameEvent({
+        action: 'camera-flash',
+        state: {
+          playerId: payload.playerId,
+          position: { x: sender.position.x, z: sender.position.z },
+        },
+      }).catch(() => {});
+      return;
+    }
+    if (payload.action === 'collect') {
+      const item = evidenceFromId(payload.objectiveId);
+      if (!item || item.userData.collected || senderCell !== item.userData.cellIndex) return;
+      const distance = Math.hypot(sender.position.x - item.position.x, sender.position.z - item.position.z);
+      if (distance > 2.5) return;
+      sender.noise = Math.max(sender.noise, 1.35);
+      sender.noiseHoldUntil = performance.now() + 750;
+      if (!collectEvidenceById(payload.objectiveId, {
+        announce: true,
+        grantCharge: false,
+        collectorName: sender.name,
+      })) return;
+      multiplayer.sendObjectiveEvent({
+        objectiveId: payload.objectiveId,
+        action: 'collect',
+        state: { cellIndex: item.userData.cellIndex, collectedBy: payload.playerId },
+      }).catch(() => recoverRoomSnapshot());
+      return;
+    }
+    if (payload.action === 'extract' && payload.objectiveId === 'exit') {
+      const distance = Math.hypot(
+        sender.position.x - exitGroup.position.x,
+        sender.position.z - exitGroup.position.z,
+      );
+      if (objectivesCompleted >= objectiveTotal && senderCell === exitIndex && distance < 2.8) win();
+      return;
+    }
+    if (payload.action !== 'activate') return;
+    const item = objectiveFromId(payload.objectiveId);
+    if (!item || item.userData.activated || senderCell !== item.userData.cellIndex) return;
+    const distance = Math.hypot(sender.position.x - item.position.x, sender.position.z - item.position.z);
+    if (distance > 2.8) return;
+    const interactionStartedAt = remoteInteractionStarts.get(interactionKey);
+    remoteInteractionStarts.delete(interactionKey);
+    const requiredHoldMs = (item.userData.type === 'valve' ? 1.8 : 1.2) * 1000;
+    if (!Number.isFinite(interactionStartedAt) || performance.now() - interactionStartedAt < requiredHoldMs * 0.85) {
+      return;
+    }
+    sender.noise = Math.max(sender.noise, 1.45);
+    sender.noiseHoldUntil = performance.now() + 850;
+    if (!activateObjectiveById(payload.objectiveId)) return;
+    multiplayer.sendObjectiveEvent({
+      objectiveId: payload.objectiveId,
+      action: 'activate',
+      state: { cellIndex: item.userData.cellIndex, activatedBy: payload.playerId },
+    }).catch(() => {
+      showMessage('ROOM SYNC FAILED', 0.7);
+      recoverRoomSnapshot();
+    });
+  });
+
+  multiplayer.on('objective:event', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    if (payload.action === 'activate') activateObjectiveById(payload.objectiveId);
+    if (payload.action === 'collect') {
+      const collectedByLocal = payload.state?.collectedBy === multiplayer.self?.id;
+      collectEvidenceById(payload.objectiveId, {
+        announce: true,
+        grantCharge: collectedByLocal,
+        collectorName: collectedByLocal ? localCallsign : 'A TEAMMATE',
+      });
+    }
+  });
+  multiplayer.on('monster:event', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    if (!multiplayer.isHost) applyNetworkMonster(payload);
+  });
+  multiplayer.on('game:event', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    if (payload.action === 'session-start') {
+      sessionStarted = true;
+      sessionStartPending = false;
+      localReady = true;
+      updateWaitingRoom();
+      showMessage('THE RUN IS OPEN', 0.8);
+    }
+    if (payload.action === 'level-complete') win({ broadcast: false });
+    if (payload.action === 'player-killed' && payload.state?.playerId === multiplayer.self?.id) die();
+    if (
+      payload.action === 'camera-flash'
+      && payload.state?.playerId !== multiplayer.self?.id
+    ) presentRemoteFlash(payload.state);
+  });
+  multiplayer.on('world:synced', (world) => {
+    killedRemotePlayers.clear();
+    pendingRemoteKills.clear();
+    const nextSeed = Number(world.seed) >>> 0;
+    const nextLevel = Number(world.level);
+    if (world.reset || nextSeed !== campaignSeed || nextLevel !== levelIndex) navigateToRoomWorld({
+      code: multiplayer.roomCode,
+      seed: nextSeed,
+      level: nextLevel,
+    });
+  });
+  multiplayer.on('voice:signal', (payload) => {
+    if (!isCurrentRoomEvent(payload)) return;
+    voiceChat.handleSignal(payload);
+  });
+  multiplayer.on('room:directory:updated', (directory) => {
+    if (lobbyMode === 'rooms') renderRoomDirectory(directory);
+  });
+  multiplayer.on('protocol:error', (error) => {
+    if (String(error?.code || '').startsWith('VOICE_') || error?.code === 'INVALID_VOICE_SIGNAL') return;
+    if (multiplayerActive) showMessage('ROOM SIGNAL ERROR', 0.65);
+    else {
+      if (lobbyMode === 'rooms') {
+        dom.roomList.replaceChildren();
+        dom.roomDirectoryCount.textContent = '!!';
+        setDirectoryState('error', 'ROOM DIRECTORY UNAVAILABLE / REFRESH TO RETRY');
+      }
+      setLobbyStatus(error?.message?.toUpperCase?.() || 'ROOM SIGNAL ERROR', 'error');
+    }
+  });
+
+  function enterCurrentLevel() {
+    if (mobile) {
+      const fullscreenRequest = document.documentElement.requestFullscreen?.();
+      fullscreenRequest?.catch(() => {});
+      beginPlay();
+    } else {
+      controls.lock();
+    }
+    audio.start().catch(() => {});
+  }
+
+  function startRoomSession() {
+    const waiting = currentWaitingRoomModel();
+    if (!waiting.isHost || !waiting.allReady || sessionStartPending || sessionStarted) return;
+    sessionStartPending = true;
+    updateWaitingRoom();
+    multiplayer.sendGameEvent({
+      action: 'session-start',
+      state: {
+        phase: 'playing',
+        startedAt: Date.now(),
+        capacity: roomCapacity(),
+      },
+    }).then(() => {
+      sessionStartPending = false;
+      sessionStarted = true;
+      localReady = true;
+      updateWaitingRoom();
+    }).catch((error) => {
+      sessionStartPending = false;
+      sessionStarted = roomSessionStarted(multiplayer.room);
+      updateWaitingRoom();
+      showMessage(
+        error?.code === 'PLAYERS_NOT_READY' ? 'A SIGNAL IS NOT READY' : 'RUN COULD NOT OPEN',
+        0.8,
+      );
+      recoverRoomSnapshot();
+    });
+  }
+
+  dom.modeSolo.addEventListener('click', async () => {
+    if (multiplayerActive) await leaveMultiplayer();
+    setLobbyMode('solo');
+  });
+  dom.modeHost.addEventListener('click', () => setLobbyMode('host'));
+  dom.modeJoin.addEventListener('click', () => setLobbyMode('join'));
+  dom.roomVisibility.addEventListener('click', () => setRoomVisibility(!roomIsPublic));
+  dom.modeRooms.addEventListener('click', () => {
+    setLobbyMode('rooms');
+    refreshRoomDirectory({ subscribe: true });
+  });
+  dom.coopConnect.addEventListener('click', () => {
+    if (lobbyMode === 'rooms') refreshRoomDirectory();
+    else connectSelectedRoom();
+  });
+  dom.roomList.addEventListener('click', (event) => {
+    const button = event.target.closest('.room-signal');
+    if (!button || button.disabled) return;
+    dom.roomCode.value = normalizeRoomCode(button.dataset.code);
+    setLobbyMode('join');
+    connectSelectedRoom();
+  });
+  dom.playerName.addEventListener('input', () => {
+    dom.playerName.value = normalizeCallsign(dom.playerName.value);
+  });
+  dom.roomCode.addEventListener('input', () => {
+    dom.roomCode.value = normalizeRoomCode(dom.roomCode.value);
+  });
+  dom.roomCode.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') connectSelectedRoom();
+  });
+  dom.lookPicker.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-look]');
+    if (!button || button.disabled || sessionStarted) return;
+    const nextLook = survivorLook(button.dataset.look).id;
+    if (nextLook === localLook) return;
+    localLook = nextLook;
+    localStorage.setItem('threshold-survivor-look', localLook);
+    if (localReady) localReady = false;
+    updateWaitingRoom();
+    sendLocalPlayerState(true);
+  });
+  dom.copyInvite.addEventListener('click', async () => {
+    const inviteUrl = roomInviteUrl();
+    try {
+      if (typeof navigator.share === 'function') {
+        await navigator.share({
+          title: 'Join my THRESHOLD room',
+          text: `Join room ${multiplayer.roomCode}. Up to ${roomCapacity()} survivors.`,
+          url: inviteUrl,
+        });
+        setLobbyStatus(`ROOM ${multiplayer.roomCode} / INVITE SHARED`, 'connected');
+      } else {
+        await navigator.clipboard.writeText(inviteUrl);
+        setLobbyStatus(`ROOM ${multiplayer.roomCode} / INVITE COPIED`, 'connected');
+      }
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      setLobbyStatus('COPY BLOCKED BY BROWSER', 'error');
+    }
+  });
+
   controls.addEventListener('lock', beginPlay);
   controls.addEventListener('unlock', () => {
     keys.clear();
@@ -2043,8 +4971,10 @@ async function init() {
     if (ending || gameState === 'dead' || gameState === 'won') return;
     if (gameState === 'playing') {
       gameState = 'paused';
+      dom.game.dataset.gameState = gameState;
       audio.suspend();
       showOverlay('pause');
+      sendLocalPlayerState(true);
     }
   });
 
@@ -2055,6 +4985,25 @@ async function init() {
     }
     if (gameState === 'won') {
       const nextLevel = levelIndex === LEVELS.length - 1 ? 0 : levelIndex + 1;
+      if (multiplayerActive) {
+        if (!multiplayer.isHost) {
+          dom.enterLabel.textContent = 'WAITING FOR HOST';
+          showMessage('HOST CONTROLS THE THRESHOLD', 0.8);
+          return;
+        }
+        const nextCampaignSeed = nextLevel === 0
+          ? (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0
+          : campaignSeed;
+        sessionStorage.setItem('threshold-campaign-seed', String(nextCampaignSeed));
+        dom.enterButton.disabled = true;
+        dom.enterLabel.textContent = 'OPENING THRESHOLD';
+        multiplayer.syncWorld({ seed: nextCampaignSeed, level: nextLevel, reset: true }).catch(() => {
+          dom.enterButton.disabled = false;
+          dom.enterLabel.textContent = level.copy.win.button;
+          showMessage('ROOM SYNC FAILED', 0.8);
+        });
+        return;
+      }
       if (nextLevel === 0) sessionStorage.removeItem('threshold-campaign-seed');
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.set('level', String(nextLevel));
@@ -2062,19 +5011,25 @@ async function init() {
       window.location.href = nextUrl.toString();
       return;
     }
-    if (mobile) {
-      const fullscreenRequest = document.documentElement.requestFullscreen?.();
-      fullscreenRequest?.catch(() => {});
-      beginPlay();
-    } else {
-      controls.lock();
+    if (multiplayerActive && gameState === 'start') {
+      if (!sessionStarted) {
+        if (waitingAction === 'start') {
+          startRoomSession();
+          return;
+        }
+        localReady = waitingAction === 'ready';
+        updateWaitingRoom();
+        sendLocalPlayerState(true);
+        return;
+      }
     }
-    audio.start().catch(() => {});
+    enterCurrentLevel();
   });
 
   document.addEventListener('pointerlockerror', () => {
     if (mobile || ending) return;
     gameState = 'paused';
+    dom.game.dataset.gameState = gameState;
     audio.suspend();
     showOverlay('pause');
     dom.overlayBody.textContent = 'Pointer lock was blocked. Select the button to try again.';
@@ -2087,27 +5042,91 @@ async function init() {
     dom.soundToggle.setAttribute('aria-label', audio.muted ? 'Unmute sound' : 'Mute sound');
   });
 
+  dom.voiceToggle.addEventListener('click', async () => {
+    if (voiceChat.state === 'requesting') {
+      voiceChat.disable();
+      showMessage('MICROPHONE REQUEST CANCELED', 0.7);
+      return;
+    }
+    if (voiceChat.enabled) {
+      voiceChat.disable();
+      showMessage('VOICE OFF / MICROPHONE RELEASED', 0.75);
+      return;
+    }
+    if (!multiplayerActive || !multiplayer.roomCode) {
+      showMessage('JOIN A ROOM TO USE VOICE', 0.75);
+      return;
+    }
+    if (!voiceAvailable()) {
+      showMessage(voiceChat.supported ? 'VOICE SERVER UNAVAILABLE' : 'VOICE NOT SUPPORTED', 0.85);
+      updateVoiceUi();
+      return;
+    }
+    bindVoiceSession();
+    try {
+      await voiceChat.enable();
+      if (voiceChat.enabled) showMessage('VOICE LINKED / MICROPHONE LIVE', 0.8);
+    } catch (error) {
+      const message = error?.name === 'NotAllowedError'
+        ? 'MICROPHONE PERMISSION BLOCKED'
+        : error?.name === 'NotFoundError'
+          ? 'NO MICROPHONE FOUND'
+          : error?.name === 'SecurityError'
+            ? 'HTTPS REQUIRED FOR VOICE'
+            : 'VOICE START FAILED';
+      showMessage(message, 1);
+    }
+  });
+
+  dom.micToggle.addEventListener('click', () => {
+    if (!voiceChat.enabled) return;
+    const muted = voiceChat.setMuted(!voiceChat.muted);
+    showMessage(muted ? 'MICROPHONE MUTED' : 'MICROPHONE LIVE', 0.55);
+  });
+
   window.addEventListener('keydown', (event) => {
     keys.add(event.code);
-    if (event.code === 'KeyE') interact();
+    if (event.repeat) return;
+    if (event.code === 'KeyE') beginInteraction();
+    if (event.code === 'KeyF' && gameState === 'playing') setFlashlight(!flashlightOn);
+    if (event.code === 'KeyQ') triggerCameraFlash();
   });
-  window.addEventListener('keyup', (event) => keys.delete(event.code));
+  window.addEventListener('keyup', (event) => {
+    keys.delete(event.code);
+    if (event.code === 'KeyE') endInteraction();
+  });
   window.addEventListener('blur', () => {
     keys.clear();
+    cancelHeldInteraction();
     touchInput.set(0, 0);
     touchSprint = false;
+    playerActualSpeed = 0;
+    playerRunning = false;
+    playerNoise = 0;
+    sendLocalPlayerState(true);
   });
   document.addEventListener('visibilitychange', () => {
+    if (voiceChat.enabled) voiceChat.setPaused(document.hidden);
     if (document.hidden) {
       keys.clear();
       touchInput.set(0, 0);
       touchSprint = false;
+      playerActualSpeed = 0;
+      playerRunning = false;
+      playerNoise = 0;
       audio.suspend();
+      sendLocalPlayerState(true);
     } else if (gameState === 'playing') {
       audio.resume();
       lastFrame = performance.now();
+      sendLocalPlayerState(true);
     }
   });
+  window.addEventListener('pagehide', () => {
+    persistFlashlightCharge();
+    waitingRoomPreview.dispose();
+    voiceChat.destroy();
+  }, { once: true });
 
   if (mobile) {
     dom.controlsCopy.innerHTML = '<span><b>LEFT</b> MOVE</span><span><b>RIGHT</b> LOOK</span><span><b>RUN</b> HOLD</span>';
@@ -2178,7 +5197,20 @@ async function init() {
     const releaseSprint = () => { touchSprint = false; };
     dom.touchSprint.addEventListener('pointerup', releaseSprint);
     dom.touchSprint.addEventListener('pointercancel', releaseSprint);
-    dom.touchAction.addEventListener('click', interact);
+    dom.touchCrouch.addEventListener('click', () => {
+      touchCrouch = !touchCrouch;
+      dom.touchCrouch.textContent = touchCrouch ? 'CROUCHED' : 'CROUCH';
+      dom.touchCrouch.setAttribute('aria-pressed', String(touchCrouch));
+    });
+    dom.touchLight.addEventListener('click', () => setFlashlight(!flashlightOn));
+    dom.touchFlash.addEventListener('click', triggerCameraFlash);
+    dom.touchAction.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      dom.touchAction.setPointerCapture(event.pointerId);
+      beginInteraction();
+    });
+    dom.touchAction.addEventListener('pointerup', endInteraction);
+    dom.touchAction.addEventListener('pointercancel', endInteraction);
   }
 
   window.addEventListener('resize', () => {
@@ -2188,12 +5220,27 @@ async function init() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, adaptiveQualityReduced ? 1 : mobile ? 1.2 : 1.5));
   });
 
+  setRoomVisibility(roomIsPublic);
+  setLobbyMode(lobbyMode);
+  if (requestedRoomCode) {
+    dom.enterButton.disabled = true;
+    await connectSelectedRoom();
+    if (roomNavigationPending) return;
+  }
+
+  playerFlashlight.visible = flashlightOn;
+  flashlightBounce.visible = flashlightOn;
+  updateEquipmentHud();
   await renderer.compileAsync(scene, camera).catch(() => {});
   updateLights();
   dom.enterButton.focus({ preventScroll: true });
   if (qaMode) {
     beginPlay();
     if (qaAutowalk) keys.add('KeyW');
+    if (qaMonsterMode && placeEntity(qaMonsterMode === 'glimpse' ? 'glimpse' : 'stalk')) {
+      if (qaMonsterMode === 'chase') entityMode = 'chase';
+      dom.game.dataset.monsterMode = entityMode;
+    }
   }
 
   function animate(now) {
@@ -2212,8 +5259,9 @@ async function init() {
         simulatePlayer(fixedStep);
         accumulator -= fixedStep;
       }
-      updateDirector(rawDelta);
+      if (!levelCompletionPending) updateDirector(rawDelta);
       updateExit();
+      updateHeldInteraction(rawDelta);
       updateObjectiveAnimations(rawDelta);
 
       lightUpdateAt -= rawDelta;
@@ -2224,15 +5272,26 @@ async function init() {
 
       if (messageUntil && elapsed > messageUntil) {
         dom.message.classList.remove('is-visible');
+        dom.message.textContent = '';
         messageUntil = 0;
       }
       updateGrain();
       dom.game.dataset.playerCell = String(
         maze.worldToCell(playerPosition.x, playerPosition.y),
       );
+      sendLocalPlayerState();
     }
 
+    if (multiplayerActive && now - lastRoomRosterUpdate > 2000) {
+      lastRoomRosterUpdate = now;
+      const stalePlayers = remotePlayers.pruneStale(12);
+      stalePlayers.forEach((id) => remoteNetworkPlayers.delete(String(id)));
+      updateRoomHud();
+    }
+    updateVoiceSpatial();
+    remotePlayers.update(rawDelta, camera);
     renderer.render(scene, camera);
+    waitingRoomPreview.update(rawDelta);
   }
   requestAnimationFrame(animate);
 }

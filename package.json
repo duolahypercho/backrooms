@@ -1,15 +1,32 @@
 {
-  "name": "level-zero-backrooms",
+  "name": "threshold-backrooms",
   "private": true,
-  "version": "1.0.0",
+  "version": "4.1.0",
+  "description": "An immersive three-level Backrooms survival-horror game with cooperative multiplayer and spatial voice chat.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/duolahypercho/backrooms.git"
+  },
+  "homepage": "https://github.com/duolahypercho/backrooms#readme",
+  "bugs": {
+    "url": "https://github.com/duolahypercho/backrooms/issues"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
-    "dev": "vite",
+    "dev": "node server/dev-server.js",
+    "dev:game": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview"
+    "test": "node --test",
+    "validate:content": "node scripts/validate-content.js",
+    "preview": "vite preview",
+    "server:multiplayer": "node server/multiplayer-server.js"
   },
   "dependencies": {
-    "three": "^0.178.0"
+    "three": "^0.178.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "vite": "^7.0.4"
