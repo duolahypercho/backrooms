@@ -8,6 +8,173 @@
 const TAU = Math.PI * 2;
 const BASE_HEIGHT = 2.48;
 
+const IDENTITY_PROFILES = Object.freeze({
+  default: {
+    id: 'husk',
+    surface: { skinRoughness: 0.78, jointRoughness: 0.86 },
+    anatomy: {
+      shoulders: 1,
+      chestWidth: 1,
+      chestDepth: 1,
+      pelvisWidth: 1,
+      headWidth: 1,
+      headHeight: 1,
+      upperArmLength: 1,
+      forearmLength: 1,
+      handLength: 1,
+      leftBulk: 1,
+      rightBulk: 1,
+    },
+    motion: {
+      rhythmWarp: 0.035,
+      gaitLeft: 1,
+      gaitRight: 1,
+      sway: 1,
+      headSnap: 0.11,
+      snapPeriod: 7.1,
+      shoulderSkew: 0.025,
+      reach: 1,
+      hunch: 1,
+      armDrag: 0,
+      stopMotionFps: 0,
+    },
+    presentation: {
+      silhouette: 'starved-humanoid',
+      eyePulse: 0.18,
+      twitchStrength: 0.7,
+    },
+    sound: {
+      breathPitch: 0.82,
+      breathWeight: 0.72,
+      stepWeight: 0.82,
+      drag: 0.08,
+    },
+  },
+  still: {
+    id: 'still',
+    surface: { skinRoughness: 1, jointRoughness: 1 },
+    anatomy: {
+      shoulders: 1.02,
+      chestWidth: 0.44,
+      chestDepth: 0.38,
+      pelvisWidth: 0.42,
+      headWidth: 1.16,
+      headHeight: 0.92,
+      upperArmLength: 1.29,
+      forearmLength: 1.26,
+      handLength: 0.92,
+      leftBulk: 0.4,
+      rightBulk: 0.34,
+    },
+    motion: {
+      rhythmWarp: 0.075,
+      gaitLeft: 0.91,
+      gaitRight: 1.04,
+      sway: 0.42,
+      headSnap: 0.29,
+      snapPeriod: 6.3,
+      shoulderSkew: 0.055,
+      reach: 1.08,
+      hunch: 0.62,
+      armDrag: 0.22,
+      stopMotionFps: 8,
+    },
+    presentation: {
+      silhouette: 'wire-rib-sentinel',
+      eyePulse: 0,
+      twitchStrength: 1.25,
+    },
+    sound: {
+      breathPitch: 0.54,
+      breathWeight: 0.44,
+      stepWeight: 0.62,
+      drag: 0.24,
+    },
+  },
+  foreman: {
+    id: 'foreman',
+    surface: { skinRoughness: 0.84, jointRoughness: 0.91 },
+    anatomy: {
+      shoulders: 1.17,
+      chestWidth: 1.12,
+      chestDepth: 1.08,
+      pelvisWidth: 1.03,
+      headWidth: 0.96,
+      headHeight: 0.93,
+      upperArmLength: 1.03,
+      forearmLength: 0.99,
+      handLength: 1.04,
+      leftBulk: 1.12,
+      rightBulk: 0.94,
+    },
+    motion: {
+      rhythmWarp: 0.12,
+      gaitLeft: 0.78,
+      gaitRight: 1.08,
+      sway: 1.18,
+      headSnap: 0.17,
+      snapPeriod: 5.4,
+      shoulderSkew: 0.14,
+      reach: 0.94,
+      hunch: 1.36,
+      armDrag: 0.14,
+      stopMotionFps: 0,
+    },
+    presentation: {
+      silhouette: 'asymmetric-maintenance-husk',
+      eyePulse: 0.34,
+      twitchStrength: 0.92,
+    },
+    sound: {
+      breathPitch: 0.72,
+      breathWeight: 1.05,
+      stepWeight: 1.28,
+      drag: 0.18,
+    },
+  },
+  wader: {
+    id: 'wader',
+    surface: { skinRoughness: 0.34, jointRoughness: 0.46 },
+    anatomy: {
+      shoulders: 0.88,
+      chestWidth: 0.9,
+      chestDepth: 0.78,
+      pelvisWidth: 0.86,
+      headWidth: 0.9,
+      headHeight: 1.08,
+      upperArmLength: 1.13,
+      forearmLength: 1.15,
+      handLength: 1.12,
+      leftBulk: 0.97,
+      rightBulk: 0.93,
+    },
+    motion: {
+      rhythmWarp: 0.16,
+      gaitLeft: 1.08,
+      gaitRight: 0.86,
+      sway: 1.42,
+      headSnap: 0.2,
+      snapPeriod: 4.9,
+      shoulderSkew: 0.085,
+      reach: 1.16,
+      hunch: 1.18,
+      armDrag: 0.27,
+      stopMotionFps: 0,
+    },
+    presentation: {
+      silhouette: 'waterlogged-dragger',
+      eyePulse: 0.48,
+      twitchStrength: 0.66,
+    },
+    sound: {
+      breathPitch: 0.63,
+      breathWeight: 0.92,
+      stepWeight: 1.08,
+      drag: 0.52,
+    },
+  },
+});
+
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 
 function seededRandom(seed) {
@@ -27,6 +194,33 @@ function colorWithOffset(THREE, color, offset) {
   return result;
 }
 
+function resolveIdentity(options) {
+  const label = `${options.identity || ''} ${options.name || ''}`.toLowerCase();
+  if (label.includes('still') || label.includes('faceless')) return 'still';
+  if (label.includes('foreman') || label.includes('maintenance')) return 'foreman';
+  if (label.includes('wader') || label.includes('waterlogged')) return 'wader';
+  return 'default';
+}
+
+function hashUnit(value) {
+  let integer = Number(value) >>> 0;
+  integer = Math.imul(integer ^ (integer >>> 16), 0x21f0aaad);
+  integer = Math.imul(integer ^ (integer >>> 15), 0x735a2d97);
+  return ((integer ^ (integer >>> 15)) >>> 0) / 4294967296;
+}
+
+function deterministicSpike(time, seed, period) {
+  const safePeriod = Math.max(1, period);
+  const segment = Math.floor(Math.max(0, time) / safePeriod);
+  const localTime = Math.max(0, time) - segment * safePeriod;
+  const eventTime = safePeriod * (0.18 + hashUnit(seed + segment * 0x9e3779b9) * 0.64);
+  const width = 0.065 + hashUnit(seed ^ (segment * 0x85ebca6b)) * 0.11;
+  const distance = Math.abs(localTime - eventTime);
+  if (distance >= width) return 0;
+  const weight = 1 - distance / width;
+  return weight * weight * (3 - weight * 2);
+}
+
 /**
  * Builds a self-contained procedural monster.
  *
@@ -38,6 +232,8 @@ function colorWithOffset(THREE, color, offset) {
  * - detail: "low", "medium", or "high" (default "medium")
  * - castShadow / receiveShadow: mesh shadow flags
  * - seed: deterministic small anatomical asymmetries
+ * - identity: "still", "foreman", or "wader" (also inferred from name)
+ * - anatomy / motion / presentation / sound: per-identity hook overrides
  */
 export function buildMonster(THREE, config = {}) {
   if (!THREE || typeof THREE.Group !== 'function' || typeof THREE.Mesh !== 'function') {
@@ -56,8 +252,24 @@ export function buildMonster(THREE, config = {}) {
     castShadow: true,
     receiveShadow: false,
     seed: 0x51f15e,
+    identity: '',
     ...config,
   };
+
+  const identityKey = resolveIdentity(options);
+  const identityDefaults = IDENTITY_PROFILES[identityKey] || IDENTITY_PROFILES.default;
+  const identityProfile = {
+    ...identityDefaults,
+    anatomy: { ...identityDefaults.anatomy, ...(options.anatomy || {}) },
+    motion: { ...identityDefaults.motion, ...(options.motion || {}) },
+    presentation: { ...identityDefaults.presentation, ...(options.presentation || {}) },
+    sound: { ...identityDefaults.sound, ...(options.sound || {}) },
+  };
+  const baseEyeIntensity = options.eyeGlow && Number.isFinite(Number(options.eyeIntensity))
+    ? Number(options.eyeIntensity)
+    : options.eyeGlow
+      ? 0.7
+      : 0;
 
   const detail = options.detail === 'high' ? 'high' : options.detail === 'low' ? 'low' : 'medium';
   const radialSegments = detail === 'high' ? 14 : detail === 'low' ? 8 : 11;
@@ -80,12 +292,12 @@ export function buildMonster(THREE, config = {}) {
 
   const skinMaterial = material({
     color: options.skinColor,
-    roughness: 0.78,
+    roughness: identityProfile.surface.skinRoughness,
     metalness: 0,
   });
   const jointMaterial = material({
     color: colorWithOffset(THREE, options.skinColor, -0.018),
-    roughness: 0.86,
+    roughness: identityProfile.surface.jointRoughness,
     metalness: 0,
   });
   const nailMaterial = material({
@@ -103,6 +315,11 @@ export function buildMonster(THREE, config = {}) {
     roughness: 0.82,
     metalness: 0,
   });
+  const accentMaterial = material({
+    color: options.toothColor,
+    roughness: identityKey === 'wader' ? 0.48 : 0.74,
+    metalness: identityKey === 'foreman' ? 0.12 : 0,
+  });
   const eyeMaterialParameters = {
     color: options.eyeColor,
     roughness: 0.3,
@@ -110,9 +327,7 @@ export function buildMonster(THREE, config = {}) {
   };
   if (options.eyeGlow) {
     eyeMaterialParameters.emissive = options.eyeColor;
-    eyeMaterialParameters.emissiveIntensity = Number.isFinite(Number(options.eyeIntensity))
-      ? Number(options.eyeIntensity)
-      : 0.7;
+    eyeMaterialParameters.emissiveIntensity = baseEyeIntensity;
   }
   const eyeMaterial = material(eyeMaterialParameters);
 
@@ -561,6 +776,265 @@ export function buildMonster(THREE, config = {}) {
     };
   }
 
+  // Identity is communicated first through silhouette. These proportions stay
+  // inside the existing rig so locomotion, collision, and network authority do
+  // not need identity-specific branches.
+  const anatomy = identityProfile.anatomy;
+  const scaleMesh = (mesh, x = 1, y = 1, z = 1) => {
+    mesh.scale.x *= x;
+    mesh.scale.y *= y;
+    mesh.scale.z *= z;
+  };
+  scaleMesh(chestMesh, anatomy.chestWidth, 1, anatomy.chestDepth);
+  scaleMesh(trapeziusMesh, anatomy.shoulders, 1, anatomy.chestDepth);
+  scaleMesh(abdomenMesh, anatomy.chestWidth * 0.94, 1, anatomy.chestDepth);
+  scaleMesh(pelvisMesh, anatomy.pelvisWidth, 1, anatomy.chestDepth * 0.94);
+  scaleMesh(craniumMesh, anatomy.headWidth, anatomy.headHeight, 1);
+  scaleMesh(faceMesh, anatomy.headWidth, anatomy.headHeight, identityKey === 'still' ? 0.82 : 1);
+  scaleMesh(jawMesh, anatomy.headWidth, anatomy.headHeight, 1);
+  neckMesh.scale.x *= anatomy.headWidth;
+  sides.left.shoulder.position.x *= anatomy.shoulders;
+  sides.right.shoulder.position.x *= anatomy.shoulders;
+  sides.left.hip.position.x *= anatomy.pelvisWidth;
+  sides.right.hip.position.x *= anatomy.pelvisWidth;
+
+  for (const [label, side] of Object.entries(sides)) {
+    const bulk = label === 'left' ? anatomy.leftBulk : anatomy.rightBulk;
+    side.elbow.position.y *= anatomy.upperArmLength;
+    side.wrist.position.y *= anatomy.forearmLength;
+    scaleMesh(side.upperArmMesh, bulk, anatomy.upperArmLength, bulk);
+    scaleMesh(side.forearmMesh, bulk, anatomy.forearmLength, bulk);
+    scaleMesh(side.handMesh, bulk, anatomy.handLength, bulk);
+    side.fingers.forEach((finger) => {
+      finger.position.y *= anatomy.handLength;
+      finger.scale.y *= anatomy.handLength;
+    });
+  }
+
+  const secondaryMotion = [];
+  if (identityKey === 'still') {
+    nose.visible = false;
+    mouth.visible = false;
+    faceMesh.visible = false;
+    jawMesh.visible = false;
+    chestMesh.visible = false;
+    trapeziusMesh.visible = false;
+    abdomenMesh.visible = false;
+    eyeSockets.forEach((socket) => { socket.visible = false; });
+    eyes.forEach((eye) => { eye.visible = false; });
+    upperTeeth.forEach((tooth) => { tooth.visible = false; });
+    lowerTeeth.forEach((tooth) => { tooth.visible = false; });
+
+    // The Level 0 silhouette is based on a barely-there wire figure: a dense,
+    // lightless head floating over open rib loops and impossible stick limbs.
+    // These pieces stay parented to the normal rig, so all existing pursuit and
+    // network animation continues to work without a separate monster path.
+    craniumMesh.scale.multiply(new THREE.Vector3(1.08, 0.82, 0.82));
+    neckMesh.scale.multiply(new THREE.Vector3(0.46, 1.14, 0.46));
+    pelvisMesh.scale.multiply(new THREE.Vector3(0.46, 0.62, 0.42));
+
+    createMesh(
+      'still_head_lobe_left',
+      smallSphereGeometry,
+      jointMaterial,
+      head,
+      [-0.085, 0.065, -0.005],
+      [0.115, 0.15, 0.105],
+    );
+    createMesh(
+      'still_head_lobe_right',
+      smallSphereGeometry,
+      skinMaterial,
+      head,
+      [0.09, 0.025, -0.018],
+      [0.13, 0.125, 0.1],
+    );
+
+    const ribCount = detail === 'low' ? 3 : 5;
+    for (let index = 0; index < ribCount; index += 1) {
+      const ribGeometry = geometry(new THREE.TorusGeometry(
+        0.225 + index * 0.014,
+        detail === 'low' ? 0.014 : 0.011,
+        detail === 'low' ? 5 : 7,
+        detail === 'high' ? 22 : 16,
+        5.15 + (index % 2) * 0.44,
+      ));
+      const rib = createMesh(
+        `still_open_rib_${index + 1}`,
+        ribGeometry,
+        jointMaterial,
+        chest,
+        [asymmetry * (index - 2) * 1.4, 0.205 - index * 0.092, 0.005 - index * 0.008],
+        [1.08 - index * 0.045, 0.38 + index * 0.012, 0.72],
+      );
+      rib.rotation.z = (index % 2 ? -0.08 : 0.06) + asymmetry * 2;
+      rib.rotation.y = (index - 2) * 0.035;
+      secondaryMotion.push({
+        node: rib,
+        rotation: rib.rotation.clone(),
+        phase: 0.7 + index * 1.17,
+        amplitude: 0.012 + index * 0.002,
+      });
+    }
+
+    const neckLoopCount = detail === 'low' ? 2 : 3;
+    for (let index = 0; index < neckLoopCount; index += 1) {
+      const loopGeometry = geometry(new THREE.TorusGeometry(
+        0.205 + index * 0.035,
+        0.009,
+        6,
+        detail === 'high' ? 24 : 18,
+        4.7 + index * 0.42,
+      ));
+      const loop = createMesh(
+        `still_neck_loop_${index + 1}`,
+        loopGeometry,
+        jointMaterial,
+        neck,
+        [index % 2 ? 0.025 : -0.02, 0.075 - index * 0.07, -0.015],
+        [1.08 + index * 0.14, 0.28, 0.62],
+      );
+      loop.rotation.z = index % 2 ? 0.17 : -0.12;
+      loop.rotation.y = -0.08 + index * 0.07;
+      secondaryMotion.push({
+        node: loop,
+        rotation: loop.rotation.clone(),
+        phase: 2.4 + index * 1.9,
+        amplitude: 0.025 + index * 0.005,
+      });
+    }
+
+    const spineWireGeometry = geometry(new THREE.CylinderGeometry(0.011, 0.018, 0.3, 5, 1));
+    const spineWire = [
+      { x: -0.012, y: -0.12, angle: 0.08 },
+      { x: 0.018, y: -0.38, angle: -0.12 },
+      { x: -0.025, y: -0.61, angle: 0.17 },
+    ];
+    spineWire.forEach((segment, index) => {
+      const bone = createMesh(
+        `still_spine_wire_${index + 1}`,
+        spineWireGeometry,
+        jointMaterial,
+        chest,
+        [segment.x, segment.y, -0.01],
+        [1, index === 2 ? 0.78 : 1, 1],
+      );
+      bone.rotation.z = segment.angle;
+    });
+
+    spineNodules.forEach((nodule, index) => {
+      nodule.position.x = (index % 2 ? 1 : -1) * (0.018 + index * 0.004);
+      nodule.position.z = -0.012;
+      nodule.scale.multiplyScalar(0.62 + index * 0.04);
+    });
+
+    for (const side of Object.values(sides)) {
+      side.upperArmMesh.scale.x *= 0.72;
+      side.upperArmMesh.scale.z *= 0.72;
+      side.forearmMesh.scale.x *= 0.68;
+      side.forearmMesh.scale.z *= 0.68;
+      side.handMesh.scale.multiplyScalar(0.52);
+      side.fingers.forEach((finger) => { finger.visible = false; });
+      side.upperLegMesh.scale.set(
+        side.upperLegMesh.scale.x * 0.34,
+        side.upperLegMesh.scale.y * 1.02,
+        side.upperLegMesh.scale.z * 0.34,
+      );
+      side.lowerLegMesh.scale.set(
+        side.lowerLegMesh.scale.x * 0.3,
+        side.lowerLegMesh.scale.y * 1.03,
+        side.lowerLegMesh.scale.z * 0.3,
+      );
+      side.footMesh.scale.multiply(new THREE.Vector3(0.42, 0.6, 0.66));
+    }
+
+    sides.left.upperArm.rotation.z -= 0.13;
+    sides.left.elbow.rotation.z += 0.07;
+    sides.left.forearm.rotation.z -= 0.04;
+    sides.left.wrist.position.y *= 1.07;
+    sides.right.upperArm.rotation.z += 0.1;
+    sides.right.elbow.rotation.z -= 0.3;
+    sides.right.forearm.rotation.z += 0.24;
+    sides.right.wrist.rotation.z -= 0.18;
+
+    sides.left.upperLeg.rotation.z -= 0.045;
+    sides.left.lowerLeg.rotation.z += 0.03;
+    sides.right.upperLeg.rotation.z += 0.21;
+    sides.right.knee.rotation.z -= 0.31;
+    sides.right.lowerLeg.rotation.z += 0.28;
+    sides.right.ankle.rotation.z -= 0.12;
+  } else if (identityKey === 'foreman') {
+    const strapGeometry = geometry(new THREE.BoxGeometry(1, 1, 1));
+    const strap = createMesh(
+      'foreman_warning_harness',
+      strapGeometry,
+      accentMaterial,
+      chest,
+      [-0.035, 0.005, 0.177],
+      [0.026, 0.42, 0.014],
+    );
+    strap.rotation.z = -0.31;
+    createMesh(
+      'foreman_swollen_shoulder',
+      sphereGeometry,
+      jointMaterial,
+      sides.left.shoulder,
+      [-0.018, 0.015, -0.018],
+      [0.145, 0.13, 0.12],
+    );
+    const cableGeometry = geometry(new THREE.CylinderGeometry(0.007, 0.016, 0.43, 6, 1));
+    const cable = createJoint('foreman_loose_cable', sides.left.shoulder, -0.055, -0.06, -0.08);
+    cable.rotation.z = -0.11;
+    createMesh(
+      'foreman_loose_cable_flesh',
+      cableGeometry,
+      accentMaterial,
+      cable,
+      [0, -0.215, 0],
+      [1, 1, 1],
+    );
+    secondaryMotion.push({
+      node: cable,
+      rotation: cable.rotation.clone(),
+      phase: 1.8,
+      amplitude: 0.1,
+    });
+  } else if (identityKey === 'wader') {
+    skinMaterial.metalness = 0.025;
+    jointMaterial.metalness = 0.018;
+    const tendrilGeometry = geometry(new THREE.CylinderGeometry(0.005, 0.017, 0.34, 5, 1));
+    const attachments = [
+      { parent: sides.left.hand, position: [-0.025, -0.14, -0.005], phase: 0.2, scale: 1.08 },
+      { parent: sides.right.hand, position: [0.025, -0.14, -0.005], phase: 2.1, scale: 0.86 },
+      { parent: chest, position: [-0.12, -0.2, -0.08], phase: 3.6, scale: 0.72 },
+      { parent: chest, position: [0.14, -0.18, -0.06], phase: 5.2, scale: 0.9 },
+    ];
+    attachments.slice(0, detail === 'low' ? 2 : attachments.length).forEach((attachment, index) => {
+      const tendril = createJoint(
+        `wader_tendril_${index + 1}`,
+        attachment.parent,
+        attachment.position[0],
+        attachment.position[1],
+        attachment.position[2],
+      );
+      tendril.rotation.z = index % 2 ? 0.08 : -0.08;
+      createMesh(
+        `wader_tendril_${index + 1}_flesh`,
+        tendrilGeometry,
+        jointMaterial,
+        tendril,
+        [0, -0.17 * attachment.scale, 0],
+        [1, attachment.scale, 1],
+      );
+      secondaryMotion.push({
+        node: tendril,
+        rotation: tendril.rotation.clone(),
+        phase: attachment.phase,
+        amplitude: 0.065 + index * 0.012,
+      });
+    });
+  }
+
   const animatedNodes = {
     root: rigRoot,
     pelvis,
@@ -625,6 +1099,7 @@ export function buildMonster(THREE, config = {}) {
     eyeSockets,
     teeth: { upper: upperTeeth, lower: lowerTeeth },
     spineNodules,
+    secondaryMotion,
     rest,
   };
 
@@ -638,6 +1113,19 @@ export function buildMonster(THREE, config = {}) {
     mouth: mouthMaterial,
     teeth: toothMaterial,
     eyes: eyeMaterial,
+    accent: accentMaterial,
+  };
+  monster.userData.identity = identityProfile.id;
+  monster.userData.horror = {
+    presentation: { ...identityProfile.presentation },
+    sound: { ...identityProfile.sound },
+    sample: {
+      proximity: 0,
+      breath: 0,
+      twitch: 0,
+      attack: 0,
+      eyeIntensity: baseEyeIntensity,
+    },
   };
   monster.userData.animation = {
     mode: 'idle',
@@ -645,6 +1133,9 @@ export function buildMonster(THREE, config = {}) {
     distance: Infinity,
     phase: 0,
     lastTime: null,
+    seed: Number(options.seed) >>> 0,
+    profile: identityProfile.motion,
+    baseEyeIntensity,
   };
   monster.userData.dispose = () => {
     geometries.forEach((item) => item.dispose());
@@ -680,44 +1171,83 @@ export function animateMonster(monster, state = {}) {
   const isAttack = mode === 'attack';
   const isRunning = mode === 'run' || mode === 'chase' || isAttack;
   const isStalking = mode === 'stalk';
+  const isSearching = mode === 'search';
+  const isHunting = isStalking || isSearching;
   const isGlimpse = mode === 'glimpse';
   const isIdle = mode === 'idle' || mode === 'hidden' || isGlimpse;
+  const animationState = monster.userData.animation;
+  const motionProfile = animationState.profile || IDENTITY_PROFILES.default.motion;
+  const seed = Number(animationState.seed) >>> 0;
+  const stopMotionFps = Number(motionProfile.stopMotionFps) || 0;
+  const quantizePose = stopMotionFps > 0 && (isGlimpse || isHunting) && speed < 1.8;
+  const poseTime = quantizePose ? Math.floor(time * stopMotionFps) / stopMotionFps : time;
   const proximity = Number.isFinite(distance) ? clamp(1 - (distance - 1.2) / 14, 0, 1) : 0;
-  const speedReference = isRunning ? 3.15 : isStalking ? 1.15 : 1.65;
-  const motion = clamp(speed / speedReference, 0, 1.2);
-  const stride = clamp(motion, 0, 1);
+  const speedReference = isRunning ? 3.15 : isHunting ? 1.15 : 1.65;
+  const motionAmount = clamp(speed / speedReference, 0, 1.2);
+  const stride = clamp(motionAmount, 0, 1);
   const cyclesPerSecond = speed > 0.015
     ? (isRunning ? 0.82 + speed * 0.31 : 0.42 + speed * 0.34)
     : 0;
-  const animationState = monster.userData.animation;
+  const rhythmWarp = clamp(
+    1 + motionProfile.rhythmWarp * (
+      Math.sin(poseTime * 1.71 + (seed & 31)) * 0.68
+      + Math.sin(poseTime * 0.47 + 1.9) * 0.32
+    ),
+    0.72,
+    1.28,
+  );
+  const chaseSurge = isRunning
+    ? 1 + deterministicSpike(time + 0.73, seed ^ 0xa511e9b3, 3.15) * 0.14
+    : 1;
   const previousTime = animationState.lastTime;
   let phase = Number.isFinite(animationState.phase) ? animationState.phase : 0;
   if (Number.isFinite(previousTime) && time >= previousTime && time - previousTime <= 0.5) {
-    phase += (time - previousTime) * TAU * cyclesPerSecond;
+    phase += (time - previousTime) * TAU * cyclesPerSecond * rhythmWarp * chaseSurge;
   } else {
     phase = time * TAU * cyclesPerSecond;
   }
   const gait = Math.sin(phase);
   const gaitQuarter = Math.cos(phase);
   const doubleStep = Math.abs(Math.sin(phase));
-  const breathRate = isRunning ? 1.35 + stride * 0.55 : isStalking ? 0.82 : 0.48;
-  const breath = Math.sin(time * TAU * breathRate);
+  const breathRate = isRunning ? 1.35 + stride * 0.55 : isHunting ? 0.82 : 0.48;
+  const breath = Math.sin(poseTime * TAU * breathRate);
   const breathLift = (breath + 1) * 0.5;
-  const idleSway = Math.sin(time * 0.73) * Math.sin(time * 0.31 + 0.8);
-  const headDrift = Math.sin(time * 0.47 + 1.1) * 0.65 + Math.sin(time * 0.19) * 0.35;
-  const lean = isAttack ? 0.34 : isRunning ? 0.19 + stride * 0.13 : isStalking ? 0.145 : 0.09;
+  const idleSway = Math.sin(poseTime * 0.73)
+    * Math.sin(poseTime * 0.31 + 0.8)
+    * motionProfile.sway;
+  const headDrift = Math.sin(poseTime * 0.47 + 1.1) * 0.65
+    + Math.sin(poseTime * 0.19) * 0.35;
+  const twitchPeriod = motionProfile.snapPeriod * (isRunning ? 0.68 : 1);
+  const twitchStrength = Number(monster.userData.horror?.presentation?.twitchStrength) || 1;
+  const twitch = clamp(
+    deterministicSpike(poseTime, seed ^ 0x68bc21eb, twitchPeriod) * twitchStrength,
+    0,
+    1.5,
+  );
+  const twitchSegment = Math.floor(Math.max(0, poseTime) / Math.max(1, twitchPeriod));
+  const twitchDirection = hashUnit(seed ^ (twitchSegment * 0x27d4eb2d)) > 0.5 ? 1 : -1;
+  const jawPulse = Math.pow(Math.max(0, Math.sin(poseTime * (isAttack ? 15.5 : 9.7) + 0.4)), 8);
+  const lean = (
+    isAttack ? 0.34 : isRunning ? 0.19 + stride * 0.13 : isHunting ? 0.145 : 0.09
+  ) * motionProfile.hunch;
   const legAmplitude = (isRunning ? 0.72 : 0.46) * stride;
   const kneeAmplitude = (isRunning ? 0.92 : 0.52) * stride;
   const armAmplitude = (isRunning ? 0.78 : 0.42) * stride;
   const bodyBob = cyclesPerSecond > 0 ? doubleStep * (isRunning ? 0.047 : 0.026) * stride : 0;
   const breathingBob = breath * (isIdle ? 0.008 : 0.004);
   const groundCompensation = gait * gait * stride * (
-    isRunning ? 0.28 : isStalking ? 0.12 : 0.11
+    isRunning ? 0.28 : isHunting ? 0.12 : 0.11
   );
 
   rig.root.position.copy(rig.rest.root.position);
   rig.root.position.y += bodyBob + breathingBob - groundCompensation;
-  setRotation(rig.root, rig.rest.root, 0, 0, -gaitQuarter * 0.012 * stride + idleSway * 0.006);
+  setRotation(
+    rig.root,
+    rig.rest.root,
+    0,
+    twitch * twitchDirection * 0.012,
+    -gaitQuarter * 0.012 * stride + idleSway * 0.006 + twitch * twitchDirection * 0.014,
+  );
 
   rig.pelvis.position.copy(rig.rest.pelvis.position);
   rig.pelvis.position.x += gaitQuarter * 0.013 * stride;
@@ -732,15 +1262,15 @@ export function animateMonster(monster, state = {}) {
     rig.spine,
     rig.rest.spine,
     lean + breathLift * 0.012,
-    gait * 0.052 * stride,
-    -gaitQuarter * 0.018 * stride + idleSway * 0.012,
+    gait * 0.052 * stride + twitch * twitchDirection * motionProfile.shoulderSkew * 0.34,
+    -gaitQuarter * 0.018 * stride + idleSway * 0.012 + twitch * twitchDirection * 0.018,
   );
   setRotation(
     rig.chest,
     rig.rest.chest,
     lean * 0.22 - breath * 0.012,
-    gait * 0.065 * stride,
-    gaitQuarter * 0.025 * stride - idleSway * 0.015,
+    gait * 0.065 * stride + twitch * twitchDirection * motionProfile.shoulderSkew * 0.56,
+    gaitQuarter * 0.025 * stride - idleSway * 0.015 + twitch * twitchDirection * 0.026,
   );
 
   const chestExpansion = breath * (isRunning ? 0.016 : 0.026);
@@ -760,15 +1290,17 @@ export function animateMonster(monster, state = {}) {
     rig.rest.neckMesh.scale.z,
   );
 
-  const leftLeg = -gait * legAmplitude;
-  const rightLeg = gait * legAmplitude;
+  const leftLeg = -gait * legAmplitude * motionProfile.gaitLeft;
+  const rightLeg = gait * legAmplitude * motionProfile.gaitRight;
   setRotation(rig.hipL, rig.rest.hipL, leftLeg, 0, -0.012 * stride);
   setRotation(rig.hipR, rig.rest.hipR, rightLeg, 0, 0.012 * stride);
   setRotation(rig.upperLegL, rig.rest.upperLegL, leftLeg * 0.08, 0, 0);
   setRotation(rig.upperLegR, rig.rest.upperLegR, rightLeg * 0.08, 0, 0);
 
-  const leftKnee = Math.max(0, -gait) * kneeAmplitude + (isRunning ? 0.08 * stride : 0);
-  const rightKnee = Math.max(0, gait) * kneeAmplitude + (isRunning ? 0.08 * stride : 0);
+  const leftKnee = Math.max(0, -gait) * kneeAmplitude * motionProfile.gaitLeft
+    + (isRunning ? 0.08 * stride : 0);
+  const rightKnee = Math.max(0, gait) * kneeAmplitude * motionProfile.gaitRight
+    + (isRunning ? 0.08 * stride : 0);
   setRotation(rig.kneeL, rig.rest.kneeL, leftKnee, 0, 0);
   setRotation(rig.kneeR, rig.rest.kneeR, rightKnee, 0, 0);
   setRotation(rig.lowerLegL, rig.rest.lowerLegL, 0, 0, 0);
@@ -779,17 +1311,39 @@ export function animateMonster(monster, state = {}) {
   setRotation(rig.footR, rig.rest.footR, Math.max(0, -gait) * 0.1 * stride, 0, 0);
 
   const shoulderRise = breathLift * (isRunning ? 0.017 : 0.009);
+  const attackReach = isAttack
+    ? (0.5 + jawPulse * 0.34) * motionProfile.reach
+    : mode === 'chase'
+      ? proximity * 0.18 * motionProfile.reach
+      : 0;
+  const huntingReach = isHunting ? motionProfile.armDrag * (0.28 + proximity * 0.32) : 0;
   rig.shoulderL.position.copy(rig.rest.shoulderL.position);
   rig.shoulderR.position.copy(rig.rest.shoulderR.position);
   rig.shoulderL.position.y += shoulderRise;
   rig.shoulderR.position.y += shoulderRise * 0.86;
-  setRotation(rig.shoulderL, rig.rest.shoulderL, gait * armAmplitude, 0, -0.025 * stride);
-  setRotation(rig.shoulderR, rig.rest.shoulderR, -gait * armAmplitude, 0, 0.025 * stride);
+  setRotation(
+    rig.shoulderL,
+    rig.rest.shoulderL,
+    gait * armAmplitude * motionProfile.gaitRight - attackReach - huntingReach,
+    0,
+    -0.025 * stride - twitch * twitchDirection * motionProfile.shoulderSkew,
+  );
+  setRotation(
+    rig.shoulderR,
+    rig.rest.shoulderR,
+    -gait * armAmplitude * motionProfile.gaitLeft - attackReach - huntingReach * 0.72,
+    0,
+    0.025 * stride + twitch * twitchDirection * motionProfile.shoulderSkew * 0.68,
+  );
   setRotation(rig.upperArmL, rig.rest.upperArmL, gait * armAmplitude * 0.08, 0, 0);
   setRotation(rig.upperArmR, rig.rest.upperArmR, -gait * armAmplitude * 0.08, 0, 0);
 
-  const leftElbow = 0.1 * stride + Math.max(0, gait) * armAmplitude * 0.58;
-  const rightElbow = 0.1 * stride + Math.max(0, -gait) * armAmplitude * 0.58;
+  const leftElbow = 0.1 * stride
+    + Math.max(0, gait) * armAmplitude * 0.58
+    + attackReach * 0.44;
+  const rightElbow = 0.1 * stride
+    + Math.max(0, -gait) * armAmplitude * 0.58
+    + attackReach * 0.38;
   setRotation(rig.elbowL, rig.rest.elbowL, leftElbow, 0, -gaitQuarter * 0.018 * stride);
   setRotation(rig.elbowR, rig.rest.elbowR, rightElbow, 0, gaitQuarter * 0.018 * stride);
   setRotation(rig.forearmL, rig.rest.forearmL, leftElbow * 0.1, 0, 0);
@@ -797,15 +1351,23 @@ export function animateMonster(monster, state = {}) {
   setRotation(rig.wristL, rig.rest.wristL, 0.035 + gaitQuarter * 0.055 * stride, 0, -0.025 * stride);
   setRotation(rig.wristR, rig.rest.wristR, 0.02 - gaitQuarter * 0.055 * stride, 0, 0.025 * stride);
 
-  const stareWeight = isGlimpse ? 1 : isStalking ? 0.66 + proximity * 0.34 : 0.3 + proximity * 0.55;
-  const headYaw = headDrift * (isGlimpse ? 0.09 : 0.045) * stareWeight - gait * 0.025 * stride;
-  const headTilt = idleSway * 0.035 * stareWeight + (isGlimpse ? Math.sin(time * 0.22) * 0.025 : 0);
+  const stareWeight = isGlimpse ? 1 : isHunting ? 0.66 + proximity * 0.34 : 0.3 + proximity * 0.55;
+  const snapWeight = isGlimpse ? 1.18 : isHunting ? 1 : isRunning ? 0.54 : 0.28;
+  const searchSweep = isSearching ? Math.sin(poseTime * 0.84 + 0.7) * 0.17 : 0;
+  const headSnap = twitch * twitchDirection * motionProfile.headSnap * snapWeight;
+  const headYaw = headDrift * (isGlimpse ? 0.09 : 0.045) * stareWeight
+    - gait * 0.025 * stride
+    + searchSweep
+    + headSnap;
+  const headTilt = idleSway * 0.035 * stareWeight
+    + (isGlimpse ? Math.sin(poseTime * 0.22) * 0.025 : 0)
+    - headSnap * 0.38;
   setRotation(
     rig.neck,
     rig.rest.neck,
     -lean * 0.68 + breath * 0.012,
-    headYaw * 0.32,
-    -headTilt * 0.35,
+    headYaw * 0.28,
+    -headTilt * 0.35 + headSnap * 0.14,
   );
   setRotation(
     rig.head,
@@ -816,15 +1378,14 @@ export function animateMonster(monster, state = {}) {
   );
 
   // A close chase uses irregular jaw snaps, while idle modes only breathe the jaw.
-  const jawPulse = Math.pow(Math.max(0, Math.sin(time * (isAttack ? 15.5 : 9.7) + 0.4)), 8);
   const baseJaw = isAttack
     ? 0.5
     : mode === 'chase'
       ? 0.1 + proximity * 0.18
-      : isStalking
+      : isHunting
         ? 0.025 + proximity * 0.065
         : 0.012 + proximity * 0.018;
-  const jawSnap = (isRunning ? 0.15 : isStalking ? 0.035 : 0.012) * jawPulse;
+  const jawSnap = (isRunning ? 0.15 : isHunting ? 0.035 : 0.012) * jawPulse;
   setRotation(rig.jaw, rig.rest.jaw, baseJaw + jawSnap + breathLift * 0.009, 0, 0);
 
   // Fingers stay cheap but avoid reading as a single rigid paddle during a run.
@@ -840,9 +1401,37 @@ export function animateMonster(monster, state = {}) {
       finger.rotation.set(
         restFinger.x + 0.025 * breathLift + jawPulse * 0.035,
         restFinger.y,
-        restFinger.z + sign * Math.sin(time * 1.7 + index) * 0.008,
+        restFinger.z + sign * Math.sin(poseTime * 1.7 + index) * 0.008,
       );
     });
+  }
+
+  for (const secondary of rig.secondaryMotion || []) {
+    secondary.node.rotation.copy(secondary.rotation);
+    secondary.node.rotation.x += Math.sin(
+      poseTime * (isRunning ? 5.2 : 1.35) + secondary.phase,
+    ) * secondary.amplitude * (0.45 + stride * 0.75);
+    secondary.node.rotation.z += (
+      Math.sin(poseTime * 0.92 + secondary.phase * 1.7) * 0.62
+      + gait * stride * 0.38
+    ) * secondary.amplitude;
+  }
+
+  const horror = monster.userData.horror;
+  const eyeMaterial = monster.userData.materials?.eyes;
+  const eyePulseAmount = Number(horror?.presentation?.eyePulse) || 0;
+  const baseEyeIntensity = Number(animationState.baseEyeIntensity) || 0;
+  const eyeIntensity = baseEyeIntensity * (
+    1
+    + eyePulseAmount * (0.18 + proximity * 0.5 + breathLift * 0.2 + twitch * 0.42)
+  );
+  if (eyeMaterial && 'emissiveIntensity' in eyeMaterial) eyeMaterial.emissiveIntensity = eyeIntensity;
+  if (horror?.sample) {
+    horror.sample.proximity = proximity;
+    horror.sample.breath = breathLift;
+    horror.sample.twitch = twitch;
+    horror.sample.attack = clamp(attackReach, 0, 1);
+    horror.sample.eyeIntensity = eyeIntensity;
   }
 
   monster.userData.animation.mode = mode;
