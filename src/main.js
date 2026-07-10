@@ -2120,6 +2120,8 @@ async function init() {
     renderer,
     slotsElement: dom.waitingSlots,
     reducedMotion,
+    materialTextureUrl: `${import.meta.env.BASE_URL}materials/survivor-fabric-albedo.jpg`,
+    materialAnisotropy: anisotropy,
   });
   let lastVoiceErrorAt = 0;
   let voicePreferredEnabled = false;

@@ -98,3 +98,32 @@ test('Threshold Surveyor keeps a planted boot at the floor while walking', () =>
   avatar.dispose();
   factory.dispose();
 });
+
+test('Threshold Surveyor equipment panels remain visible above the suit and pack shells', () => {
+  const factory = character.createFactory({ THREE, options });
+  const avatar = factory.create({ id: 'peer-details', name: 'Mara', flashlight: false });
+  avatar.root.updateMatrixWorld(true);
+
+  const chestRay = new THREE.Raycaster(
+    new THREE.Vector3(0, 1.385, 1),
+    new THREE.Vector3(0, 0, -1),
+  );
+  const chestHits = chestRay.intersectObjects([
+    avatar.root.getObjectByName('torso_flesh'),
+    avatar.root.getObjectByName('chest_panel'),
+  ]);
+  assert.equal(chestHits[0]?.object.name, 'chest_panel');
+
+  const packRay = new THREE.Raycaster(
+    new THREE.Vector3(0, 1.405, -1),
+    new THREE.Vector3(0, 0, 1),
+  );
+  const packHits = packRay.intersectObjects([
+    avatar.root.getObjectByName('backpack'),
+    avatar.root.getObjectByName('backpack_access_panel'),
+  ]);
+  assert.equal(packHits[0]?.object.name, 'backpack_access_panel');
+
+  avatar.dispose();
+  factory.dispose();
+});

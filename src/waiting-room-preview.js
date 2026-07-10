@@ -9,6 +9,8 @@ export function createWaitingRoomPreview(THREE, {
   renderer,
   slotsElement,
   reducedMotion = false,
+  materialTextureUrl = null,
+  materialAnisotropy = 4,
 } = {}) {
   if (!THREE || typeof THREE.WebGLRenderer !== 'function') {
     throw new TypeError('createWaitingRoomPreview requires the active Three.js namespace.');
@@ -75,6 +77,8 @@ export function createWaitingRoomPreview(THREE, {
       flashlightBeams: false,
       positionSmoothing: 24,
       rotationSmoothing: 18,
+      materialTextureUrl: materialTextureUrl || undefined,
+      materialAnisotropy,
     });
   }
 
@@ -116,8 +120,9 @@ export function createWaitingRoomPreview(THREE, {
         materials.filter(Boolean).forEach((material) => {
           if (!material.isMeshStandardMaterial || material.userData.waitingRoomLit) return;
           material.userData.waitingRoomLit = true;
-          material.emissive.copy(material.color).multiplyScalar(0.2);
-          material.emissiveIntensity = 0.72;
+          const boost = material.map ? 0.1 : 0.2;
+          material.emissive.copy(material.color).multiplyScalar(boost);
+          material.emissiveIntensity = material.map ? 0.38 : 0.72;
         });
       });
     });

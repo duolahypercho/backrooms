@@ -346,8 +346,8 @@ export function buildMonster(THREE, config = {}) {
   ));
   const pelvisGeometry = geometry(new THREE.SphereGeometry(1, radialSegments, verticalSegments));
   const abdomenGeometry = geometry(new THREE.CylinderGeometry(
-    0.125,
-    0.19,
+    0.14,
+    0.205,
     0.41,
     radialSegments,
     2,
@@ -360,33 +360,34 @@ export function buildMonster(THREE, config = {}) {
     1,
   ));
   const upperArmGeometry = geometry(new THREE.CylinderGeometry(
-    0.06,
-    0.086,
+    0.098,
+    0.072,
     0.64,
     radialSegments,
     2,
   ));
   const forearmGeometry = geometry(new THREE.CylinderGeometry(
-    0.044,
-    0.066,
+    0.076,
+    0.052,
     0.69,
     radialSegments,
     2,
   ));
   const thighGeometry = geometry(new THREE.CylinderGeometry(
-    0.072,
-    0.114,
+    0.128,
+    0.086,
     0.61,
     radialSegments,
     2,
   ));
   const shinGeometry = geometry(new THREE.CylinderGeometry(
-    0.051,
-    0.076,
+    0.09,
+    0.062,
     0.53,
     radialSegments,
     2,
   ));
+  const footSoleGeometry = geometry(new THREE.BoxGeometry(0.16, 0.035, 0.28));
   const fingerGeometry = geometry(new THREE.CylinderGeometry(
     0.007,
     0.012,
@@ -466,8 +467,8 @@ export function buildMonster(THREE, config = {}) {
     sphereGeometry,
     skinMaterial,
     chest,
-    [0, 0.01, 0],
-    [0.305, 0.335, 0.175],
+    [0, 0.01, 0.01],
+    [0.29, 0.34, 0.22],
   );
   const trapeziusMesh = createMesh(
     'trapezius',
@@ -628,10 +629,10 @@ export function buildMonster(THREE, config = {}) {
     createMesh(
       `${label}_shoulder_joint`,
       smallSphereGeometry,
-      jointMaterial,
+      skinMaterial,
       shoulder,
       [0, 0, 0],
-      [0.105, 0.105, 0.09],
+      [0.072, 0.068, 0.062],
     );
 
     const upperArm = createJoint(`${label}_upper_arm`, shoulder, 0, 0, 0);
@@ -649,10 +650,10 @@ export function buildMonster(THREE, config = {}) {
     createMesh(
       `${label}_elbow_joint`,
       smallSphereGeometry,
-      jointMaterial,
+      skinMaterial,
       elbow,
       [0, 0, 0],
-      [0.065, 0.073, 0.058],
+      [0.048, 0.052, 0.044],
     );
 
     const forearm = createJoint(`${label}_forearm`, elbow, 0, 0, 0);
@@ -715,10 +716,10 @@ export function buildMonster(THREE, config = {}) {
     createMesh(
       `${label}_hip_joint`,
       smallSphereGeometry,
-      jointMaterial,
+      skinMaterial,
       hip,
       [0, 0, 0],
-      [0.105, 0.105, 0.09],
+      [0.078, 0.072, 0.068],
     );
     const upperLeg = createJoint(`${label}_upper_leg`, hip, 0, 0, 0);
     const upperLegMesh = createMesh(
@@ -734,10 +735,10 @@ export function buildMonster(THREE, config = {}) {
     createMesh(
       `${label}_knee_joint`,
       smallSphereGeometry,
-      jointMaterial,
+      skinMaterial,
       knee,
-      [0, 0, 0.012],
-      [0.075, 0.073, 0.068],
+      [0, 0, 0.01],
+      [0.055, 0.052, 0.05],
     );
     const lowerLeg = createJoint(`${label}_lower_leg`, knee, 0, 0, 0);
     const lowerLegMesh = createMesh(
@@ -750,14 +751,22 @@ export function buildMonster(THREE, config = {}) {
     );
     const ankle = createJoint(`${label}_ankle`, lowerLeg, 0, -0.53, 0);
     const foot = createJoint(`${label}_foot`, ankle, 0, 0, 0.03);
-    foot.rotation.x = -0.025;
+    foot.rotation.x = -0.04;
     const footMesh = createMesh(
       `${label}_foot_flesh`,
       sphereGeometry,
       skinMaterial,
       foot,
-      [0, -0.015, 0.075],
-      [0.108, 0.065, 0.185],
+      [0, -0.008, 0.07],
+      [0.1, 0.055, 0.175],
+    );
+    createMesh(
+      `${label}_foot_sole`,
+      footSoleGeometry,
+      jointMaterial,
+      foot,
+      [0, -0.038, 0.07],
+      [0.95, 1, 0.92],
     );
 
     sides[label] = {
