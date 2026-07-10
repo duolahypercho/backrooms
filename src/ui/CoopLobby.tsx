@@ -18,6 +18,10 @@ const LOOKS: ReadonlyArray<{ id: SurvivorLook; label: string }> = [
 export function CoopLobby() {
   return (
     <div id="coop-lobby" aria-label="Game mode">
+      <div className="coop-mode-heading">
+        <span>PLAY MODE</span>
+        <small>SOLO OR UP TO 4 SURVIVORS</small>
+      </div>
       <div className="coop-mode-tabs" role="group" aria-label="Select game mode">
         {MODES.map(({ id, label }) => (
           <button
@@ -73,7 +77,10 @@ export function CoopLobby() {
       <section id="waiting-room" aria-labelledby="waiting-room-title" hidden>
         <div className="waiting-room-head">
           <span id="waiting-room-title">ASSEMBLY ROOM</span>
-          <strong id="waiting-room-count">1/4</strong>
+          <div>
+            <strong id="waiting-room-count">1/4</strong>
+            <button id="leave-room" type="button">BACK TO MODES</button>
+          </div>
         </div>
         <div id="waiting-stage">
           <div id="waiting-slots" role="list" aria-label="Players in waiting room" />

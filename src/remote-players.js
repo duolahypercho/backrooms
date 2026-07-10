@@ -184,8 +184,10 @@ export function createRemotePlayerManager(THREE, scene, config = {}) {
     flashlights: true,
     flashlightBeams: true,
     flashlightColor: 0xffedbd,
-    flashlightIntensity: 34,
-    flashlightDistance: 15,
+    // Three.js punctual lights use candela; keep teammate beams readable but
+    // below the local player's stronger navigation light.
+    flashlightIntensity: 220,
+    flashlightDistance: 18,
     flashlightAngle: 0.34,
     beamOpacity: 0.032,
     positionSmoothing: 14,

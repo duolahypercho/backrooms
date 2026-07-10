@@ -1,5 +1,12 @@
 export const ROOM_CAPACITY = 4;
 
+const ROOM_SPAWN_OFFSETS = Object.freeze([
+  Object.freeze({ x: -0.72, z: 0.62 }),
+  Object.freeze({ x: 0.72, z: 0.62 }),
+  Object.freeze({ x: -0.72, z: -0.62 }),
+  Object.freeze({ x: 0.72, z: -0.62 }),
+]);
+
 export const SURVIVOR_LOOKS = Object.freeze([
   Object.freeze({ id: 'mustard', name: 'MUSTARD', color: 0x81794b, css: '#81794b' }),
   Object.freeze({ id: 'moss', name: 'MOSS', color: 0x596b59, css: '#596b59' }),
@@ -11,6 +18,14 @@ const LOOK_BY_ID = new Map(SURVIVOR_LOOKS.map((look) => [look.id, look]));
 
 export function survivorLook(value) {
   return LOOK_BY_ID.get(String(value || '').toLowerCase()) || SURVIVOR_LOOKS[0];
+}
+
+export function roomSpawnOffset(slotIndex = 0) {
+  const normalizedIndex = Math.max(
+    0,
+    Math.min(ROOM_SPAWN_OFFSETS.length - 1, Math.trunc(Number(slotIndex) || 0)),
+  );
+  return ROOM_SPAWN_OFFSETS[normalizedIndex];
 }
 
 export function waitingRoomModel({

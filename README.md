@@ -1,6 +1,6 @@
 # THRESHOLD
 
-A three-chapter first-person browser survival-horror game built with Vite, React, TypeScript, Tailwind CSS, and Three.js. Every campaign creates connected procedural Backrooms mazes with distinct environments, objectives, realistic lighting, spatial audio, environmental storytelling, collectible recordings, and a persistent animated hunter. Play solo or open a room for cooperative multiplayer with proximity voice.
+A 30-chapter first-person browser survival-horror game built with Vite, React, TypeScript, Tailwind CSS, and Three.js. Every campaign creates connected procedural Backrooms mazes with distinct environments, objectives, physically calibrated lighting, generated high-detail materials, spatial audio, environmental storytelling, collectible recordings, and a persistent animated hunter. Play solo or open a room for cooperative multiplayer with proximity voice.
 
 Source repository: [duolahypercho/backrooms](https://github.com/duolahypercho/backrooms)
 
@@ -13,9 +13,12 @@ Source repository: [duolahypercho/backrooms](https://github.com/duolahypercho/ba
 
 ## Chapters
 
-- **Level 0, The Lobby:** learn the maze and find the EXIT.
-- **Level 1, Maintenance:** replace three fuses to power the freight lift.
-- **Level 2, Lower Tunnels:** open four drain valves and reach the hatch.
+- **Levels 0–5:** The Lobby, Maintenance, Lower Tunnels, Hotel Corridors, Server Farm, and Cold Storage.
+- **Levels 6–13:** Abandoned Mall, Hospital Ward, Parking Structure, School Halls, Office Atrium, Subway Service, Industrial Laundry, and Empty Supermarket.
+- **Levels 14–21:** Indoor Pool, Movie Theater, Research Lab, Apartment Corridors, Freight Depot, Archive Stacks, Greenhouse, and Data Center Annex.
+- **Levels 22–29:** Airport Concourse, Museum Storage, Hotel Basement, Power Substation, Flooded Station, Snowbound Resort, Concrete Megastructure, and Threshold Core.
+
+The campaign descends continuously from Level 0 through Level 29. The Threshold Core closes the loop and returns survivors to Level 0 for a new seeded run.
 
 Each chapter has its own creature silhouette, motion, senses, sounds, hunt rhythm, and recovery window. The creature sees open sightlines, notices carried light, hears movement and loud interactions, searches your last known location, and can be escaped by breaking line of sight and disappearing into a genuinely dark area.
 

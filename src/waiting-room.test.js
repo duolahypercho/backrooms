@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ROOM_CAPACITY, survivorLook, waitingRoomModel } from './waiting-room.js';
+import {
+  ROOM_CAPACITY,
+  roomSpawnOffset,
+  survivorLook,
+  waitingRoomModel,
+} from './waiting-room.js';
 
 const players = [
   { id: 'host', name: 'HOST', connected: true, state: { ready: true, look: 'moss', characterId: 'host-rig' } },
@@ -54,4 +59,15 @@ test('started rooms give every player an enter action and normalize unknown look
   assert.equal(started.action, 'enter');
   assert.equal(started.actionLabel, 'ENTER LEVEL');
   assert.equal(survivorLook('unknown').id, 'mustard');
+});
+
+test('room spawn slots keep four survivors from occupying the same camera position', () => {
+  const slots = Array.from({ length: ROOM_CAPACITY }, (_, index) => roomSpawnOffset(index));
+  assert.equal(new Set(slots.map(({ x, z }) => `${x}:${z}`)).size, ROOM_CAPACITY);
+  for (const slot of slots) {
+    assert.ok(Math.abs(slot.x) < 1);
+    assert.ok(Math.abs(slot.z) < 1);
+  }
+  assert.equal(roomSpawnOffset(-3), slots[0]);
+  assert.equal(roomSpawnOffset(99), slots[ROOM_CAPACITY - 1]);
 });

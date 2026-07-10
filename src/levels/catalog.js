@@ -27,6 +27,30 @@ const PROP_TYPES = new Set([
   'service-crate',
   'discarded-chair',
   'oil-drum',
+  'retail-shelf',
+  'hospital-bed',
+  'school-locker',
+  'parking-barrier',
+  'pool-bench',
+  'theater-seat',
+  'lab-table',
+  'airport-bench',
+  'server-rack',
+]);
+const BLOCKING_PROP_TYPES = new Set([
+  'square-column',
+  'service-crate',
+  'discarded-chair',
+  'oil-drum',
+  'retail-shelf',
+  'hospital-bed',
+  'school-locker',
+  'parking-barrier',
+  'pool-bench',
+  'theater-seat',
+  'lab-table',
+  'airport-bench',
+  'server-rack',
 ]);
 const OBJECTIVE_TYPES = new Set(['none', 'fuse', 'valve']);
 const MONSTER_IDENTITIES = new Set(['still', 'foreman', 'wader']);
@@ -267,7 +291,7 @@ function validateObjectiveAndProps(level, source) {
     if (!PROP_TYPES.has(definition.type)) throw contentError(source, `${path}.type "${definition.type}" is not supported.`);
     requireNumber(definition.density, `${path}.density`, source, { min: 0, max: 0.25 });
     totalPropDensity += definition.density;
-    if (['square-column', 'service-crate', 'discarded-chair', 'oil-drum'].includes(definition.type)) {
+    if (BLOCKING_PROP_TYPES.has(definition.type)) {
       blockingPropDensity += definition.density;
     }
     requireColor(definition.color, `${path}.color`, source);

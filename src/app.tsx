@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 import { GameShell } from './ui/GameShell';
 import './style.css';
 
 declare global {
   interface Window {
+    __thresholdReactRoot?: Root;
     __thresholdRuntimeStarted?: boolean;
   }
 }
@@ -25,4 +26,5 @@ function ThresholdApp() {
 const rootElement = document.querySelector<HTMLDivElement>('#root');
 if (!rootElement) throw new Error('THRESHOLD requires a #root mount element.');
 
-createRoot(rootElement).render(<ThresholdApp />);
+window.__thresholdReactRoot ??= createRoot(rootElement);
+window.__thresholdReactRoot.render(<ThresholdApp />);

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LEVELS, LEVEL_IDS, getLevelIndex } from './levels/index.js';
 import { createGameContentFingerprint } from './levels/fingerprint.js';
 import { animateMonster, buildMonster } from './monster.js';
@@ -11,9 +12,11 @@ import { createVoiceChat } from './voice-chat.js';
 import { createAtmosphereDirector } from './atmosphere.js';
 import { buildIncidentGroup, planIncidents } from './incidents.js';
 import { chooseSpacedCells, enumerateCellIndexes } from './content-placement.js';
+import { RENDER_LIGHTING, resolveRenderLighting } from './render-lighting.js';
 import {
   ROOM_CAPACITY,
   SURVIVOR_LOOKS,
+  roomSpawnOffset,
   survivorLook,
   waitingRoomModel,
 } from './waiting-room.js';
@@ -42,6 +45,12 @@ const WALL_HEIGHT = 3.05;
 const WALL_THICKNESS = 0.17;
 const EYE_HEIGHT = 1.62;
 const PLAYER_RADIUS = 0.31;
+const MATERIAL_DETAIL_PATHS = Object.freeze({
+  wall: `${import.meta.env.BASE_URL}materials/aged-wallpaper-albedo.jpg`,
+  floor: `${import.meta.env.BASE_URL}materials/damp-carpet-albedo.jpg`,
+  ceiling: `${import.meta.env.BASE_URL}materials/acoustic-tile-albedo.jpg`,
+  creature: `${import.meta.env.BASE_URL}materials/creature-skin-albedo.jpg`,
+});
 
 const dom = {
   game: document.querySelector('#game'),
@@ -81,6 +90,7 @@ const dom = {
   roomDirectoryEmpty: document.querySelector('#room-directory-empty'),
   waitingRoom: document.querySelector('#waiting-room'),
   waitingRoomCount: document.querySelector('#waiting-room-count'),
+  leaveRoom: document.querySelector('#leave-room'),
   waitingSlots: document.querySelector('#waiting-slots'),
   lookPicker: document.querySelector('#look-picker'),
   waitingRoomStatus: document.querySelector('#waiting-room-status'),
@@ -769,7 +779,19 @@ class AudioEngine {
   }
 }
 
-function buildTexture(kind, size, repeatX, repeatY, anisotropy, profile = {}) {
+async function loadMaterialDetails() {
+  const loader = new THREE.ImageLoader();
+  const entries = await Promise.all(Object.entries(MATERIAL_DETAIL_PATHS).map(async ([kind, path]) => {
+    try {
+      return [kind, await loader.loadAsync(path)];
+    } catch {
+      return [kind, null];
+    }
+  }));
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+function buildTexture(kind, size, repeatX, repeatY, anisotropy, profile = {}, detailImage = null) {
   const colorCanvas = document.createElement('canvas');
   const bumpCanvas = document.createElement('canvas');
   colorCanvas.width = colorCanvas.height = size;
@@ -868,6 +890,26 @@ function buildTexture(kind, size, repeatX, repeatY, anisotropy, profile = {}) {
 
   colorContext.putImageData(colorImage, 0, 0);
   bumpContext.putImageData(bumpImage, 0, 0);
+
+  const supportsGeneratedDetail = kind === 'wall'
+    ? !pattern.includes('concrete') && !pattern.includes('seeping') && !pattern.includes('runoff')
+    : kind === 'floor'
+      ? !pattern.includes('oil') && pattern !== 'tile' && !pattern.includes('flooded') && pattern !== 'wet'
+      : pattern !== 'corrugated' && !pattern.includes('service');
+  if (detailImage && supportsGeneratedDetail) {
+    const colorOpacity = kind === 'floor' ? 0.4 : kind === 'wall' ? 0.34 : 0.28;
+    colorContext.save();
+    colorContext.globalCompositeOperation = kind === 'wall' ? 'multiply' : 'soft-light';
+    colorContext.globalAlpha = colorOpacity;
+    colorContext.drawImage(detailImage, 0, 0, size, size);
+    colorContext.restore();
+
+    bumpContext.save();
+    bumpContext.globalCompositeOperation = 'soft-light';
+    bumpContext.globalAlpha = kind === 'floor' ? 0.32 : 0.22;
+    bumpContext.drawImage(detailImage, 0, 0, size, size);
+    bumpContext.restore();
+  }
 
   const map = new THREE.CanvasTexture(colorCanvas);
   const bumpMap = new THREE.CanvasTexture(bumpCanvas);
@@ -1023,6 +1065,70 @@ function buildStoryPlacard(text, accent = '#b8bd86') {
   return group;
 }
 
+function buildDetailedPropGeometry(type) {
+  const parts = [];
+  const box = (width, height, depth, x, y, z) => {
+    const geometry = new THREE.BoxGeometry(width, height, depth);
+    geometry.translate(x, y, z);
+    parts.push(geometry);
+  };
+
+  if (type === 'retail-shelf') {
+    for (const x of [-0.68, 0.68]) box(0.055, 1.6, 0.44, x, 0, 0);
+    for (const y of [-0.72, -0.24, 0.24, 0.72]) box(1.42, 0.055, 0.48, 0, y, 0);
+    box(1.42, 1.54, 0.035, 0, 0, -0.23);
+  } else if (type === 'hospital-bed') {
+    box(1.65, 0.16, 0.72, 0, 0.16, 0);
+    box(1.58, 0.07, 0.62, 0, -0.01, 0);
+    for (const x of [-0.69, 0.69]) {
+      for (const z of [-0.25, 0.25]) box(0.055, 0.52, 0.055, x, -0.27, z);
+    }
+    box(0.07, 0.78, 0.78, -0.82, 0.2, 0);
+  } else if (type === 'school-locker') {
+    box(0.82, 1.72, 0.42, 0, 0, 0);
+    box(0.35, 0.025, 0.035, 0, 0.52, 0.23);
+    box(0.35, 0.025, 0.035, 0, 0.44, 0.23);
+    box(0.035, 0.16, 0.035, 0.28, 0.05, 0.23);
+  } else if (type === 'parking-barrier') {
+    box(0.13, 0.92, 0.13, -0.72, -0.22, 0);
+    box(0.13, 0.92, 0.13, 0.72, -0.22, 0);
+    box(1.65, 0.16, 0.18, 0, 0.24, 0);
+    box(0.38, 0.1, 0.2, 0, 0.24, 0.01);
+  } else if (type === 'pool-bench') {
+    for (const z of [-0.22, 0, 0.22]) box(1.45, 0.09, 0.16, 0, 0.22, z);
+    for (const x of [-0.52, 0.52]) box(0.09, 0.5, 0.48, x, -0.03, 0);
+  } else if (type === 'theater-seat') {
+    box(0.58, 0.16, 0.54, 0, -0.2, 0.08);
+    box(0.58, 0.72, 0.14, 0, 0.22, -0.2);
+    box(0.1, 0.45, 0.55, -0.36, -0.02, 0);
+    box(0.1, 0.45, 0.55, 0.36, -0.02, 0);
+  } else if (type === 'lab-table') {
+    box(1.55, 0.12, 0.72, 0, 0.33, 0);
+    for (const x of [-0.62, 0.62]) {
+      for (const z of [-0.25, 0.25]) box(0.08, 0.66, 0.08, x, -0.06, z);
+    }
+    box(0.62, 0.34, 0.46, 0, 0.56, -0.05);
+  } else if (type === 'airport-bench') {
+    for (const x of [-0.62, 0, 0.62]) {
+      box(0.54, 0.1, 0.48, x, 0.08, 0.05);
+      box(0.54, 0.62, 0.1, x, 0.38, -0.18);
+    }
+    box(1.85, 0.08, 0.08, 0, -0.08, 0);
+    box(0.08, 0.46, 0.08, -0.68, -0.3, 0);
+    box(0.08, 0.46, 0.08, 0.68, -0.3, 0);
+  } else if (type === 'server-rack') {
+    box(0.82, 1.82, 0.72, 0, 0, 0);
+    for (const y of [-0.62, -0.31, 0, 0.31, 0.62]) box(0.68, 0.035, 0.035, 0, y, 0.38);
+    box(0.07, 1.62, 0.04, -0.3, 0, 0.39);
+    box(0.07, 1.62, 0.04, 0.3, 0, 0.39);
+  } else return null;
+
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((geometry) => geometry.dispose());
+  merged.computeVertexNormals();
+  return merged;
+}
+
 function buildEnvironmentProps(
   level,
   maze,
@@ -1040,6 +1146,17 @@ function buildEnvironmentProps(
   const protectedSet = protectedCells instanceof Set ? protectedCells : new Set(protectedCells);
   const allCells = Array.from(maze.cells, (_, index) => index)
     .filter((index) => !protectedSet.has(index));
+  const detailedPropLayouts = Object.freeze({
+    'retail-shelf': { y: 0.84, x: 1.46, z: 0.5 },
+    'hospital-bed': { y: 0.58, x: 1.72, z: 0.82 },
+    'school-locker': { y: 0.86, x: 0.84, z: 0.46 },
+    'parking-barrier': { y: 0.68, x: 1.72, z: 0.28 },
+    'pool-bench': { y: 0.28, x: 1.5, z: 0.56 },
+    'theater-seat': { y: 0.54, x: 0.82, z: 0.72 },
+    'lab-table': { y: 0.48, x: 1.62, z: 0.78 },
+    'airport-bench': { y: 0.62, x: 1.92, z: 0.66 },
+    'server-rack': { y: 0.91, x: 0.88, z: 0.78 },
+  });
 
   const chooseCells = (requestedCount, definition, blocking) => {
     const chosen = [];
@@ -1091,7 +1208,13 @@ function buildEnvironmentProps(
   for (const definition of level.props) {
     const requestedCount = Math.floor(maze.cells.length * definition.density * (mobile ? 0.55 : 1));
     if (requestedCount <= 0) continue;
-    const blocking = ['square-column', 'service-crate', 'discarded-chair', 'oil-drum'].includes(definition.type);
+    const blocking = [
+      'square-column',
+      'service-crate',
+      'discarded-chair',
+      'oil-drum',
+      ...Object.keys(detailedPropLayouts),
+    ].includes(definition.type);
     const placementCells = chooseCells(requestedCount, definition, blocking);
     if (!placementCells.length) continue;
     const count = placementCells.length;
@@ -1099,7 +1222,11 @@ function buildEnvironmentProps(
     let material;
     const materialColor = definition.accent === undefined ? definition.color : 0xffffff;
 
-    if (definition.type === 'wall-pipe' || definition.type === 'hanging-chain') {
+    const detailedGeometry = buildDetailedPropGeometry(definition.type);
+    if (detailedGeometry) {
+      geometry = detailedGeometry;
+      material = new THREE.MeshStandardMaterial({ color: materialColor, roughness: 0.72, metalness: 0.14 });
+    } else if (definition.type === 'wall-pipe' || definition.type === 'hanging-chain') {
       geometry = new THREE.CylinderGeometry(
         definition.type === 'hanging-chain' ? 0.018 : 0.055,
         definition.type === 'hanging-chain' ? 0.018 : 0.055,
@@ -1134,7 +1261,20 @@ function buildEnvironmentProps(
       const cellIndex = placementCells[i];
       const cell = maze.cellToWorld(cellIndex);
       let colliderSize = null;
-      if (definition.type === 'wall-pipe') {
+      const detailedLayout = detailedPropLayouts[definition.type];
+      if (detailedLayout) {
+        const edge = random() > 0.5 ? 1 : -1;
+        const quarterTurn = random() <= 0.5;
+        position.set(
+          cell.x + edge * Math.max(0.45, 1.45 - detailedLayout.x * 0.35),
+          detailedLayout.y,
+          cell.z + (random() - 0.5) * 0.7,
+        );
+        quaternion.setFromEuler(new THREE.Euler(0, quarterTurn ? Math.PI / 2 : 0, 0));
+        colliderSize = quarterTurn
+          ? { x: detailedLayout.z, z: detailedLayout.x }
+          : { x: detailedLayout.x, z: detailedLayout.z };
+      } else if (definition.type === 'wall-pipe') {
         position.set(cell.x + (random() - 0.5) * 1.5, WALL_HEIGHT - 0.42, cell.z + (random() - 0.5) * 1.5);
         quaternion.setFromEuler(new THREE.Euler(random() > 0.5 ? Math.PI / 2 : 0, 0, random() > 0.5 ? Math.PI / 2 : 0));
       } else if (definition.type === 'hanging-chain') {
@@ -1229,6 +1369,7 @@ async function init() {
   const requestedCharacterId = String(query.get('character') || '').trim();
   const localCharacterId = characterCatalog.has(requestedCharacterId) ? requestedCharacterId : '';
   const mobile = query.has('touch') || window.matchMedia('(pointer: coarse)').matches;
+  const renderLighting = resolveRenderLighting(level, { mobile });
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const multiplayerRequested = query.has('room') || query.get('layout') === 'shared';
   const mazeSize = multiplayerRequested ? level.maze.desktop : mobile ? level.maze.mobile : level.maze.desktop;
@@ -1332,21 +1473,44 @@ async function init() {
   const scene = new THREE.Scene();
   const fogColor = new THREE.Color(level.fog.color);
   scene.background = fogColor;
-  scene.fog = new THREE.FogExp2(fogColor, mobile ? level.fog.density.mobile : level.fog.density.desktop);
+  scene.fog = new THREE.FogExp2(
+    fogColor,
+    renderLighting.fogDensity,
+  );
 
   const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, mobile ? 42 : 58);
   camera.position.set(startPosition.x, EYE_HEIGHT, startPosition.z);
+  const startDirection = DIRECTIONS
+    .filter((direction) => !maze.hasWall(startIndex, direction.bit))
+    .map((direction) => {
+      let current = startIndex;
+      let length = 0;
+      while (length < 8 && !maze.hasWall(current, direction.bit)) {
+        const { col, row } = maze.coords(current);
+        const nextCol = col + direction.dc;
+        const nextRow = row + direction.dr;
+        if (!maze.valid(nextCol, nextRow)) break;
+        current = maze.index(nextCol, nextRow);
+        length += 1;
+      }
+      return { direction, length };
+    })
+    .sort((left, right) => right.length - left.length)[0]?.direction;
+  if (startDirection) {
+    camera.rotation.y = Math.atan2(-startDirection.dc, -startDirection.dr);
+  }
   scene.add(camera);
 
   const renderer = new THREE.WebGLRenderer({
     antialias: !mobile,
+    preserveDrawingBuffer: qaMode,
     powerPreference: 'high-performance',
   });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.2 : 1.5));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = level.lighting.exposure;
+  renderer.toneMappingExposure = renderLighting.exposure;
   renderer.shadowMap.enabled = !mobile;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   dom.viewport.appendChild(renderer.domElement);
@@ -1364,11 +1528,47 @@ async function init() {
   controls.pointerSpeed = 0.78;
 
   const anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
+  const materialDetails = await loadMaterialDetails();
+  const creatureSkinMap = materialDetails.creature
+    ? new THREE.Texture(materialDetails.creature)
+    : null;
+  if (creatureSkinMap) {
+    creatureSkinMap.colorSpace = THREE.NoColorSpace;
+    creatureSkinMap.wrapS = THREE.RepeatWrapping;
+    creatureSkinMap.wrapT = THREE.RepeatWrapping;
+    creatureSkinMap.repeat.set(2.6, 2.6);
+    creatureSkinMap.anisotropy = anisotropy;
+    creatureSkinMap.needsUpdate = true;
+  }
   const worldWidth = cols * CELL_SIZE;
   const worldDepth = rows * CELL_SIZE;
-  const wallTextures = buildTexture('wall', 512, 1, 1, anisotropy, level.surfaces.wall);
-  const floorTextures = buildTexture('floor', 512, worldWidth / 3.1, worldDepth / 3.1, anisotropy, level.surfaces.floor);
-  const ceilingTextures = buildTexture('ceiling', 256, cols, rows, anisotropy, level.surfaces.ceiling);
+  const wallTextures = buildTexture(
+    'wall',
+    512,
+    1,
+    1,
+    anisotropy,
+    level.surfaces.wall,
+    materialDetails.wall,
+  );
+  const floorTextures = buildTexture(
+    'floor',
+    512,
+    worldWidth / 3.1,
+    worldDepth / 3.1,
+    anisotropy,
+    level.surfaces.floor,
+    materialDetails.floor,
+  );
+  const ceilingTextures = buildTexture(
+    'ceiling',
+    256,
+    cols,
+    rows,
+    anisotropy,
+    level.surfaces.ceiling,
+    materialDetails.ceiling,
+  );
 
   const wallMaterial = new THREE.MeshStandardMaterial({
     map: wallTextures.map,
@@ -1582,7 +1782,7 @@ async function init() {
   const panelMaterial = new THREE.MeshStandardMaterial({
     color: level.lighting.fixture.panelColor,
     emissive: level.lighting.fixture.panelColor,
-    emissiveIntensity: 3.1,
+    emissiveIntensity: renderLighting.panelEmissionIntensity,
     roughness: 0.38,
   });
   const deadPanelMaterial = new THREE.MeshStandardMaterial({
@@ -1619,11 +1819,11 @@ async function init() {
   const ambient = new THREE.HemisphereLight(
     level.lighting.hemisphere.sky,
     level.lighting.hemisphere.ground,
-    mobile ? level.lighting.hemisphere.intensity.mobile : level.lighting.hemisphere.intensity.desktop,
+    renderLighting.hemisphereIntensity,
   );
   const bounce = new THREE.AmbientLight(
     level.lighting.ambient.color,
-    mobile ? level.lighting.ambient.intensity.mobile : level.lighting.ambient.intensity.desktop,
+    renderLighting.ambientIntensity,
   );
   scene.add(ambient, bounce);
 
@@ -1632,7 +1832,7 @@ async function init() {
   for (let i = 0; i < lightCount; i += 1) {
     const light = new THREE.SpotLight(
       level.lighting.fixture.color,
-      level.lighting.fixture.intensity,
+      renderLighting.fixtureIntensity,
       level.lighting.fixture.distance,
       level.lighting.fixture.angle,
       level.lighting.fixture.penumbra,
@@ -1654,18 +1854,18 @@ async function init() {
   flashlightTarget.position.set(0, -0.04, -1);
   const playerFlashlight = new THREE.SpotLight(
     flashlightProfile.color ?? level.lighting.fixture.color,
-    flashlightProfile.intensity ?? (mobile ? 38 : 52),
+    renderLighting.flashlightIntensity,
     flashlightProfile.distance ?? 18,
     flashlightProfile.angle ?? 0.42,
     flashlightProfile.penumbra ?? 0.72,
-    1.7,
+    2,
   );
   playerFlashlight.position.set(0.12, -0.08, -0.08);
   playerFlashlight.target = flashlightTarget;
   playerFlashlight.castShadow = false;
   const flashlightBounce = new THREE.PointLight(
     flashlightProfile.color ?? level.lighting.fixture.color,
-    1.25,
+    renderLighting.flashlightBounceIntensity,
     3.2,
     2,
   );
@@ -1889,7 +2089,8 @@ async function init() {
     toothColor: level.monster.skin.type === 'faceless-shadow' ? level.monster.skin.body : level.monster.skin.accent,
     eyeGlow: Boolean(level.monster.skin.eye),
     eyeIntensity: level.monster.skin.emissiveIntensity,
-    detail: mobile ? 'low' : 'medium',
+    detail: mobile ? 'medium' : 'high',
+    skinMap: creatureSkinMap,
     seed: seed ^ 0x51f15e,
   });
   entity.visible = false;
@@ -1901,6 +2102,8 @@ async function init() {
     nameTags: true,
     flashlights: true,
     avatarScale: 1,
+    materialTextureUrl: `${import.meta.env.BASE_URL}materials/survivor-fabric-albedo.jpg`,
+    materialAnisotropy: anisotropy,
   });
   const waitingRoomPreview = createWaitingRoomPreview(THREE, {
     renderer,
@@ -1934,6 +2137,7 @@ async function init() {
   let sessionStarted = false;
   let waitingAction = 'ready';
   let sessionStartPending = false;
+  let roomSpawnApplied = false;
   let lobbyBusy = false;
   let lobbyMode = requestedRoomCode ? 'join' : 'solo';
   let roomIsPublic = true;
@@ -2066,8 +2270,8 @@ async function init() {
   let activeLightCount = lightPool.length;
 
   const grainContext = dom.grain.getContext('2d', { alpha: true });
-  dom.grain.width = 180;
-  dom.grain.height = 100;
+  dom.grain.width = 320;
+  dom.grain.height = 180;
 
   function updateGrain(force = false) {
     if (!force && (reducedMotion || elapsed - lastGrainUpdate < 0.085)) return;
@@ -2078,7 +2282,7 @@ async function init() {
       image.data[i] = value;
       image.data[i + 1] = value;
       image.data[i + 2] = value;
-      image.data[i + 3] = 62;
+      image.data[i + 3] = 42;
     }
     grainContext.putImageData(image, 0, 0);
   }
@@ -2390,6 +2594,42 @@ async function init() {
     localReady = roomSessionStarted(room) || selfState.ready === true;
     sessionStarted = roomSessionStarted(room);
     sessionStartPending = false;
+  }
+
+  function placeLocalPlayerForRoom(room = multiplayer.room) {
+    if (roomSpawnApplied || !room || !multiplayer.self?.id) return;
+    const connected = (room.players || []).filter((player) => player.connected !== false);
+    const selfIndex = connected.findIndex(
+      (player) => String(player.id) === String(multiplayer.self.id),
+    );
+    const slotIndex = Math.max(0, selfIndex);
+    const selfState = connected[slotIndex]?.state || {};
+    const savedX = Number(selfState.position?.x);
+    const savedZ = Number(selfState.position?.z);
+    const savedCell = Number.isFinite(savedX) && Number.isFinite(savedZ)
+      ? maze.worldToCell(savedX, savedZ)
+      : -1;
+    const savedCenter = savedCell >= 0 ? maze.cellToWorld(savedCell) : null;
+    const savedPositionIsSafe = selfState.playing === true
+      && savedCenter
+      && Math.abs(savedX - savedCenter.x) <= CELL_SIZE * 0.48
+      && Math.abs(savedZ - savedCenter.z) <= CELL_SIZE * 0.48
+      && exitDistances[savedCell] >= 0;
+
+    if (savedPositionIsSafe) {
+      playerPosition.set(savedX, savedZ);
+      const savedYaw = Number(selfState.yaw);
+      const savedPitch = Number(selfState.pitch);
+      if (Number.isFinite(savedYaw)) camera.rotation.y = savedYaw - Math.PI;
+      if (Number.isFinite(savedPitch)) camera.rotation.x = clamp(savedPitch, -1.25, 1.25);
+    } else {
+      const offset = roomSpawnOffset(slotIndex);
+      playerPosition.set(startPosition.x + offset.x, startPosition.z + offset.z);
+    }
+    velocity.set(0, 0);
+    resolveCollision();
+    camera.position.set(playerPosition.x, EYE_HEIGHT, playerPosition.y);
+    roomSpawnApplied = true;
   }
 
   function currentWaitingRoomModel() {
@@ -2734,6 +2974,7 @@ async function init() {
     hydrateWaitingRoomState(room);
     multiplayerActive = true;
     localAlive = true;
+    placeLocalPlayerForRoom(room);
     const currentUrl = new URL(window.location.href);
     currentUrl.searchParams.set('room', room.code);
     currentUrl.searchParams.set('level', String(room.level));
@@ -2760,6 +3001,7 @@ async function init() {
     localReady = false;
     sessionStarted = false;
     sessionStartPending = false;
+    roomSpawnApplied = false;
     remoteNetworkPlayers.clear();
     remotePlayers.clear();
     killedRemotePlayers.clear();
@@ -3255,10 +3497,12 @@ async function init() {
     playerFlashlight.visible = burst || (flashlightOn && !lowChargeFlicker);
     flashlightBounce.visible = playerFlashlight.visible;
     const chargeIntensity = lerp(0.58, 1, clamp(flashlightCharge / 0.35, 0, 1));
-    playerFlashlight.intensity = (flashlightProfile.intensity ?? (mobile ? 38 : 52))
+    playerFlashlight.intensity = renderLighting.flashlightIntensity
       * chargeIntensity
       * (burst ? (reducedMotion ? 1.65 : 5.5) : 1);
-    flashlightBounce.intensity = (burst ? (reducedMotion ? 2.1 : 7.5) : 1.25) * chargeIntensity;
+    flashlightBounce.intensity = (burst ? (reducedMotion ? 2.1 : 7.5) : 1.25)
+      * RENDER_LIGHTING.localBounceScale
+      * chargeIntensity;
     if (elapsed >= batteryPersistAt) {
       persistFlashlightCharge();
     }
@@ -4214,7 +4458,9 @@ async function init() {
     if (elapsed < remoteFlashUntil) {
       const remaining = clamp((remoteFlashUntil - elapsed) / (reducedMotion ? 0.08 : 0.22), 0, 1);
       remoteFlashLight.visible = true;
-      remoteFlashLight.intensity = (reducedMotion ? 18 : 92) * remaining;
+      remoteFlashLight.intensity = (reducedMotion ? 18 : 92)
+        * RENDER_LIGHTING.cameraFlashScale
+        * remaining;
     } else remoteFlashLight.visible = false;
     const idleFlicker = level.lighting.fixture.flicker || {};
     lightPool.forEach((light, index) => {
@@ -4222,18 +4468,22 @@ async function init() {
       const wobble = 0.95 + Math.sin(
         elapsed * (Number(idleFlicker.idleRate) || 4.2) + phase,
       ) * (Number(idleFlicker.idleDepth) || 0.035);
-      light.intensity = level.lighting.fixture.intensity * lightMultiplier * wobble * (index === 0 ? 1.08 : 0.92);
+      light.intensity = renderLighting.fixtureIntensity
+        * lightMultiplier
+        * wobble
+        * (index === 0 ? 1.08 : 0.92);
     });
-    panelMaterial.emissiveIntensity = 3.1 * (flickering ? Math.max(0.08, lightMultiplier) : 1);
+    panelMaterial.emissiveIntensity = renderLighting.panelEmissionIntensity
+      * (flickering ? Math.max(0.08, lightMultiplier) : 1);
     renderer.toneMappingExposure = lerp(
       renderer.toneMappingExposure,
-      level.lighting.exposure
+      renderLighting.exposure
         * (flickering ? 0.62 + lightMultiplier * 0.38 : 1)
         * (playerHidden ? 0.72 : 1),
       0.18,
     );
     dom.threat.style.opacity = String(clamp((tension - 0.38) * 0.8, 0, 0.48));
-    dom.grain.style.opacity = reducedMotion ? '0.035' : String(0.068 + fear * 0.075);
+    dom.grain.style.opacity = reducedMotion ? '0.025' : String(0.038 + fear * 0.045);
     if (!reducedMotion) {
       const targetFov = 70
         + fear * 1.8
@@ -4604,7 +4854,7 @@ async function init() {
     renderer.shadowMap.enabled = false;
     lightPool.forEach((light) => { light.castShadow = false; });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
-    dom.grain.style.opacity = '0.04';
+    dom.grain.style.opacity = '0.03';
     dom.game.dataset.quality = 'reduced';
     updateLights();
   }
@@ -4647,6 +4897,7 @@ async function init() {
   multiplayer.on('reconnect:failed', ({ code }) => {
     if (code) sessionStorage.removeItem(roomResumeKey(code));
     multiplayerActive = false;
+    roomSpawnApplied = false;
     voiceChat.disable({ announce: false });
     remoteNetworkPlayers.clear();
     remotePlayers.clear();
@@ -4910,6 +5161,10 @@ async function init() {
   dom.modeRooms.addEventListener('click', () => {
     setLobbyMode('rooms');
     refreshRoomDirectory({ subscribe: true });
+  });
+  dom.leaveRoom.addEventListener('click', async () => {
+    await leaveMultiplayer();
+    setLobbyMode('solo');
   });
   dom.coopConnect.addEventListener('click', () => {
     if (lobbyMode === 'rooms') refreshRoomDirectory();
@@ -5231,6 +5486,8 @@ async function init() {
   updateEquipmentHud();
   await renderer.compileAsync(scene, camera).catch(() => {});
   updateLights();
+  dom.game.dataset.ready = 'true';
+  dom.game.setAttribute('aria-busy', 'false');
   dom.enterButton.focus({ preventScroll: true });
   if (qaMode) {
     beginPlay();

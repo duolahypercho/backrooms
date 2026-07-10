@@ -55,8 +55,15 @@ function TouchControls() {
 }
 
 function Overlay() {
+  const query = new URLSearchParams(window.location.search);
+  const startsVisible = !query.has('qa') || query.has('room');
   return (
-    <section id="overlay" className="is-visible" data-mode="start" aria-labelledby="overlay-title">
+    <section
+      id="overlay"
+      className={startsVisible ? 'is-visible' : undefined}
+      data-mode="start"
+      aria-labelledby="overlay-title"
+    >
       <div className="overlay-noise" aria-hidden="true" />
       <div className="overlay-frame">
         <div id="classification" className="classification">THRESHOLD ARCHIVE / LEVEL 0</div>
@@ -93,7 +100,12 @@ function Overlay() {
 
 export function GameShell() {
   return (
-    <main id="game" className="relative min-h-dvh w-full overflow-hidden" aria-label="THRESHOLD first-person horror game">
+    <main
+      id="game"
+      className="relative min-h-dvh w-full overflow-hidden"
+      aria-label="THRESHOLD first-person horror game"
+      aria-busy="true"
+    >
       <div id="viewport" aria-hidden="true" />
       <div id="vignette" aria-hidden="true" />
       <canvas id="grain" aria-hidden="true" />

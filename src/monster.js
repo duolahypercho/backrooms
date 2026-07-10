@@ -52,19 +52,19 @@ const IDENTITY_PROFILES = Object.freeze({
   },
   still: {
     id: 'still',
-    surface: { skinRoughness: 1, jointRoughness: 1 },
+    surface: { skinRoughness: 0.84, jointRoughness: 0.93 },
     anatomy: {
-      shoulders: 1.02,
-      chestWidth: 0.44,
-      chestDepth: 0.38,
-      pelvisWidth: 0.42,
-      headWidth: 1.16,
-      headHeight: 0.92,
-      upperArmLength: 1.29,
-      forearmLength: 1.26,
-      handLength: 0.92,
-      leftBulk: 0.4,
-      rightBulk: 0.34,
+      shoulders: 1.06,
+      chestWidth: 0.72,
+      chestDepth: 0.68,
+      pelvisWidth: 0.67,
+      headWidth: 1.06,
+      headHeight: 1.02,
+      upperArmLength: 1.19,
+      forearmLength: 1.18,
+      handLength: 1.02,
+      leftBulk: 0.58,
+      rightBulk: 0.54,
     },
     motion: {
       rhythmWarp: 0.075,
@@ -229,6 +229,7 @@ function deterministicSpike(time, seed, period) {
  * - skinColor, eyeColor, mouthColor, toothColor: Three.js color values
  * - eyeGlow: show dim emissive eye reflections (default true)
  * - eyeIntensity: emissive strength (default 0.7)
+ * - skinMap: optional shared grayscale detail texture used as a bump map
  * - detail: "low", "medium", or "high" (default "medium")
  * - castShadow / receiveShadow: mesh shadow flags
  * - seed: deterministic small anatomical asymmetries
@@ -292,13 +293,19 @@ export function buildMonster(THREE, config = {}) {
 
   const skinMaterial = material({
     color: options.skinColor,
+    bumpMap: options.skinMap || null,
+    bumpScale: options.skinMap ? (identityKey === 'wader' ? 0.045 : 0.032) : 0,
     roughness: identityProfile.surface.skinRoughness,
     metalness: 0,
+    dithering: true,
   });
   const jointMaterial = material({
     color: colorWithOffset(THREE, options.skinColor, -0.018),
+    bumpMap: options.skinMap || null,
+    bumpScale: options.skinMap ? 0.024 : 0,
     roughness: identityProfile.surface.jointRoughness,
     metalness: 0,
+    dithering: true,
   });
   const nailMaterial = material({
     color: colorWithOffset(THREE, options.skinColor, -0.045),
@@ -353,29 +360,29 @@ export function buildMonster(THREE, config = {}) {
     1,
   ));
   const upperArmGeometry = geometry(new THREE.CylinderGeometry(
-    0.052,
-    0.078,
+    0.06,
+    0.086,
     0.64,
     radialSegments,
     2,
   ));
   const forearmGeometry = geometry(new THREE.CylinderGeometry(
-    0.038,
-    0.059,
+    0.044,
+    0.066,
     0.69,
     radialSegments,
     2,
   ));
   const thighGeometry = geometry(new THREE.CylinderGeometry(
-    0.064,
-    0.105,
+    0.072,
+    0.114,
     0.61,
     radialSegments,
     2,
   ));
   const shinGeometry = geometry(new THREE.CylinderGeometry(
-    0.045,
-    0.068,
+    0.051,
+    0.076,
     0.53,
     radialSegments,
     2,
@@ -816,45 +823,138 @@ export function buildMonster(THREE, config = {}) {
     nose.visible = false;
     mouth.visible = false;
     faceMesh.visible = false;
-    jawMesh.visible = false;
-    chestMesh.visible = false;
-    trapeziusMesh.visible = false;
-    abdomenMesh.visible = false;
-    eyeSockets.forEach((socket) => { socket.visible = false; });
-    eyes.forEach((eye) => { eye.visible = false; });
+    jawMesh.visible = true;
+    chestMesh.visible = true;
+    trapeziusMesh.visible = true;
+    abdomenMesh.visible = true;
+    eyeSockets.forEach((socket, index) => {
+      socket.visible = true;
+      socket.position.z = 0.184;
+      socket.position.y = 0.058 + (index === 0 ? -asymmetry * 0.18 : asymmetry * 0.18);
+      socket.scale.set(0.043, 0.034, 0.011);
+    });
+    eyes.forEach((eye, index) => {
+      eye.visible = Boolean(options.eyeGlow);
+      eye.position.z = 0.193;
+      eye.position.y = 0.058 + (index === 0 ? -asymmetry * 0.18 : asymmetry * 0.18);
+      eye.scale.set(0.011, 0.008, 0.005);
+    });
     upperTeeth.forEach((tooth) => { tooth.visible = false; });
     lowerTeeth.forEach((tooth) => { tooth.visible = false; });
 
-    // The Level 0 silhouette is based on a barely-there wire figure: a dense,
-    // lightless head floating over open rib loops and impossible stick limbs.
-    // These pieces stay parented to the normal rig, so all existing pursuit and
-    // network animation continues to work without a separate monster path.
-    craniumMesh.scale.multiply(new THREE.Vector3(1.08, 0.82, 0.82));
-    neckMesh.scale.multiply(new THREE.Vector3(0.46, 1.14, 0.46));
-    pelvisMesh.scale.multiply(new THREE.Vector3(0.46, 0.62, 0.42));
+    // Preserve the legacy wire-rib identity hooks, but back them with a complete
+    // emaciated body. At chase distance this reads as stretched flesh over bone,
+    // rather than disconnected primitives floating in the dark.
+    craniumMesh.scale.multiply(new THREE.Vector3(1.03, 0.96, 0.98));
+    neckMesh.scale.multiply(new THREE.Vector3(0.82, 1.1, 0.86));
+    pelvisMesh.scale.multiply(new THREE.Vector3(0.93, 0.86, 0.92));
+
+    createMesh(
+      'still_facial_envelope',
+      sphereGeometry,
+      skinMaterial,
+      head,
+      [0, -0.006, 0.052],
+      [0.16, 0.194, 0.134],
+    );
+    jawMesh.scale.multiply(new THREE.Vector3(0.94, 0.9, 0.9));
+
+    const seamGeometry = geometry(new THREE.BoxGeometry(1, 1, 1));
+    const mouthSeam = createMesh(
+      'still_mouth_seam',
+      seamGeometry,
+      mouthMaterial,
+      head,
+      [asymmetry * 0.22, -0.075, 0.186],
+      [0.086, 0.006, 0.006],
+    );
+    mouthSeam.rotation.z = asymmetry * 1.8;
+
+    if (detail !== 'low') {
+      for (const side of [-1, 1]) {
+        const brow = createMesh(
+          side < 0 ? 'still_brow_left' : 'still_brow_right',
+          smallSphereGeometry,
+          jointMaterial,
+          head,
+          [side * 0.061, 0.096 + side * asymmetry * 0.12, 0.176],
+          [0.067, 0.022, 0.014],
+        );
+        brow.rotation.z = side * -0.1;
+        createMesh(
+          side < 0 ? 'still_cheek_left' : 'still_cheek_right',
+          smallSphereGeometry,
+          skinMaterial,
+          head,
+          [side * 0.073, -0.018, 0.166],
+          [0.057, 0.068, 0.025],
+        );
+        if (detail === 'high') {
+          createMesh(
+            side < 0 ? 'still_ear_left' : 'still_ear_right',
+            smallSphereGeometry,
+            jointMaterial,
+            head,
+            [side * 0.169, 0.018, 0.018],
+            [0.021, 0.051, 0.014],
+          );
+        }
+      }
+    }
 
     createMesh(
       'still_head_lobe_left',
       smallSphereGeometry,
       jointMaterial,
       head,
-      [-0.085, 0.065, -0.005],
-      [0.115, 0.15, 0.105],
+      [-0.09, 0.073, -0.035],
+      [0.105, 0.14, 0.095],
     );
     createMesh(
       'still_head_lobe_right',
       smallSphereGeometry,
       skinMaterial,
       head,
-      [0.09, 0.025, -0.018],
-      [0.13, 0.125, 0.1],
+      [0.095, 0.035, -0.045],
+      [0.112, 0.13, 0.092],
     );
+
+    const sternumGeometry = geometry(new THREE.CylinderGeometry(0.024, 0.035, 0.37, 7, 1));
+    const sternum = createMesh(
+      'still_sternum',
+      sternumGeometry,
+      jointMaterial,
+      chest,
+      [asymmetry * 0.2, -0.015, 0.122],
+      [1, 1, 0.72],
+    );
+    sternum.rotation.z = asymmetry * 0.7;
+
+    for (const side of [-1, 1]) {
+      const pectoral = createMesh(
+        side < 0 ? 'still_pectoral_left' : 'still_pectoral_right',
+        smallSphereGeometry,
+        skinMaterial,
+        chest,
+        [side * 0.105, 0.075 + side * asymmetry * 0.2, 0.082],
+        [0.13, 0.14, 0.09],
+      );
+      pectoral.rotation.z = side * 0.07;
+      createMesh(
+        side < 0 ? 'still_oblique_left' : 'still_oblique_right',
+        smallSphereGeometry,
+        skinMaterial,
+        spine,
+        [side * 0.079, 0.205, 0.025],
+        [0.075, 0.19, 0.071],
+      );
+    }
 
     const ribCount = detail === 'low' ? 3 : 5;
     for (let index = 0; index < ribCount; index += 1) {
       const ribGeometry = geometry(new THREE.TorusGeometry(
-        0.225 + index * 0.014,
-        detail === 'low' ? 0.014 : 0.011,
+        0.205 + index * 0.011,
+        detail === 'low' ? 0.016 : 0.013,
         detail === 'low' ? 5 : 7,
         detail === 'high' ? 22 : 16,
         5.15 + (index % 2) * 0.44,
@@ -864,8 +964,8 @@ export function buildMonster(THREE, config = {}) {
         ribGeometry,
         jointMaterial,
         chest,
-        [asymmetry * (index - 2) * 1.4, 0.205 - index * 0.092, 0.005 - index * 0.008],
-        [1.08 - index * 0.045, 0.38 + index * 0.012, 0.72],
+        [asymmetry * (index - 2) * 0.7, 0.19 - index * 0.084, 0.119 - index * 0.004],
+        [1.02 - index * 0.04, 0.34 + index * 0.012, 0.64],
       );
       rib.rotation.z = (index % 2 ? -0.08 : 0.06) + asymmetry * 2;
       rib.rotation.y = (index - 2) * 0.035;
@@ -880,19 +980,19 @@ export function buildMonster(THREE, config = {}) {
     const neckLoopCount = detail === 'low' ? 2 : 3;
     for (let index = 0; index < neckLoopCount; index += 1) {
       const loopGeometry = geometry(new THREE.TorusGeometry(
-        0.205 + index * 0.035,
-        0.009,
+        0.084 + index * 0.011,
+        0.008,
         6,
         detail === 'high' ? 24 : 18,
-        4.7 + index * 0.42,
+        5.1 + index * 0.25,
       ));
       const loop = createMesh(
         `still_neck_loop_${index + 1}`,
         loopGeometry,
         jointMaterial,
         neck,
-        [index % 2 ? 0.025 : -0.02, 0.075 - index * 0.07, -0.015],
-        [1.08 + index * 0.14, 0.28, 0.62],
+        [index % 2 ? 0.008 : -0.006, 0.11 - index * 0.055, 0.056],
+        [1.02 + index * 0.05, 0.5, 0.72],
       );
       loop.rotation.z = index % 2 ? 0.17 : -0.12;
       loop.rotation.y = -0.08 + index * 0.07;
@@ -900,15 +1000,15 @@ export function buildMonster(THREE, config = {}) {
         node: loop,
         rotation: loop.rotation.clone(),
         phase: 2.4 + index * 1.9,
-        amplitude: 0.025 + index * 0.005,
+        amplitude: 0.012 + index * 0.003,
       });
     }
 
-    const spineWireGeometry = geometry(new THREE.CylinderGeometry(0.011, 0.018, 0.3, 5, 1));
+    const spineWireGeometry = geometry(new THREE.CylinderGeometry(0.014, 0.021, 0.25, 6, 1));
     const spineWire = [
-      { x: -0.012, y: -0.12, angle: 0.08 },
-      { x: 0.018, y: -0.38, angle: -0.12 },
-      { x: -0.025, y: -0.61, angle: 0.17 },
+      { x: -0.01, y: -0.11, angle: 0.05 },
+      { x: 0.013, y: -0.32, angle: -0.07 },
+      { x: -0.016, y: -0.52, angle: 0.09 },
     ];
     spineWire.forEach((segment, index) => {
       const bone = createMesh(
@@ -916,36 +1016,87 @@ export function buildMonster(THREE, config = {}) {
         spineWireGeometry,
         jointMaterial,
         chest,
-        [segment.x, segment.y, -0.01],
-        [1, index === 2 ? 0.78 : 1, 1],
+        [segment.x, segment.y, -0.102],
+        [1, index === 2 ? 0.86 : 1, 0.82],
       );
       bone.rotation.z = segment.angle;
+      bone.visible = detail === 'high';
     });
 
     spineNodules.forEach((nodule, index) => {
       nodule.position.x = (index % 2 ? 1 : -1) * (0.018 + index * 0.004);
-      nodule.position.z = -0.012;
-      nodule.scale.multiplyScalar(0.62 + index * 0.04);
+      nodule.position.z = -0.112;
+      nodule.scale.multiplyScalar(0.74 + index * 0.04);
+      nodule.visible = detail === 'high';
     });
 
-    for (const side of Object.values(sides)) {
-      side.upperArmMesh.scale.x *= 0.72;
-      side.upperArmMesh.scale.z *= 0.72;
-      side.forearmMesh.scale.x *= 0.68;
-      side.forearmMesh.scale.z *= 0.68;
-      side.handMesh.scale.multiplyScalar(0.52);
-      side.fingers.forEach((finger) => { finger.visible = false; });
+    for (const [label, side] of Object.entries(sides)) {
+      side.upperArmMesh.scale.x *= 0.62;
+      side.upperArmMesh.scale.z *= 0.64;
+      side.forearmMesh.scale.x *= 0.64;
+      side.forearmMesh.scale.z *= 0.66;
+      side.handMesh.scale.multiply(new THREE.Vector3(0.82, 0.9, 0.78));
+      side.fingers.forEach((finger) => {
+        finger.visible = detail !== 'low';
+        finger.scale.x *= 0.8;
+        finger.scale.z *= 0.8;
+      });
       side.upperLegMesh.scale.set(
-        side.upperLegMesh.scale.x * 0.34,
-        side.upperLegMesh.scale.y * 1.02,
-        side.upperLegMesh.scale.z * 0.34,
+        side.upperLegMesh.scale.x * 0.78,
+        side.upperLegMesh.scale.y * 1.01,
+        side.upperLegMesh.scale.z * 0.74,
       );
       side.lowerLegMesh.scale.set(
-        side.lowerLegMesh.scale.x * 0.3,
-        side.lowerLegMesh.scale.y * 1.03,
-        side.lowerLegMesh.scale.z * 0.3,
+        side.lowerLegMesh.scale.x * 0.74,
+        side.lowerLegMesh.scale.y * 1.02,
+        side.lowerLegMesh.scale.z * 0.7,
       );
-      side.footMesh.scale.multiply(new THREE.Vector3(0.42, 0.6, 0.66));
+      side.footMesh.scale.multiply(new THREE.Vector3(0.78, 0.82, 0.88));
+
+      if (detail !== 'low') {
+        createMesh(
+          `still_${label}_deltoid`,
+          smallSphereGeometry,
+          skinMaterial,
+          side.shoulder,
+          [0, -0.035, 0.002],
+          [0.09, 0.125, 0.082],
+        );
+      }
+      if (detail === 'high') {
+        createMesh(
+          `still_${label}_upper_arm_mass`,
+          smallSphereGeometry,
+          skinMaterial,
+          side.upperArm,
+          [0, -0.25, 0.004],
+          [0.052, 0.19, 0.048],
+        );
+        createMesh(
+          `still_${label}_forearm_mass`,
+          smallSphereGeometry,
+          jointMaterial,
+          side.forearm,
+          [0, -0.27, 0.004],
+          [0.046, 0.205, 0.043],
+        );
+        createMesh(
+          `still_${label}_thigh_mass`,
+          smallSphereGeometry,
+          skinMaterial,
+          side.upperLeg,
+          [0, -0.235, 0.002],
+          [0.086, 0.225, 0.077],
+        );
+        createMesh(
+          `still_${label}_calf_mass`,
+          smallSphereGeometry,
+          jointMaterial,
+          side.lowerLeg,
+          [0, -0.225, -0.008],
+          [0.061, 0.19, 0.057],
+        );
+      }
     }
 
     sides.left.upperArm.rotation.z -= 0.13;
@@ -953,16 +1104,16 @@ export function buildMonster(THREE, config = {}) {
     sides.left.forearm.rotation.z -= 0.04;
     sides.left.wrist.position.y *= 1.07;
     sides.right.upperArm.rotation.z += 0.1;
-    sides.right.elbow.rotation.z -= 0.3;
-    sides.right.forearm.rotation.z += 0.24;
-    sides.right.wrist.rotation.z -= 0.18;
+    sides.right.elbow.rotation.z -= 0.16;
+    sides.right.forearm.rotation.z += 0.13;
+    sides.right.wrist.rotation.z -= 0.1;
 
     sides.left.upperLeg.rotation.z -= 0.045;
     sides.left.lowerLeg.rotation.z += 0.03;
-    sides.right.upperLeg.rotation.z += 0.21;
-    sides.right.knee.rotation.z -= 0.31;
-    sides.right.lowerLeg.rotation.z += 0.28;
-    sides.right.ankle.rotation.z -= 0.12;
+    sides.right.upperLeg.rotation.z += 0.11;
+    sides.right.knee.rotation.z -= 0.14;
+    sides.right.lowerLeg.rotation.z += 0.12;
+    sides.right.ankle.rotation.z -= 0.06;
   } else if (identityKey === 'foreman') {
     const strapGeometry = geometry(new THREE.BoxGeometry(1, 1, 1));
     const strap = createMesh(
@@ -1140,6 +1291,7 @@ export function buildMonster(THREE, config = {}) {
   monster.userData.dispose = () => {
     geometries.forEach((item) => item.dispose());
     materials.forEach((item) => item.dispose());
+    options.skinMap?.dispose?.();
   };
 
   return monster;

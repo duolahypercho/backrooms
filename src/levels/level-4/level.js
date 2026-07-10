@@ -146,7 +146,7 @@ export default {
   props: [
     { type: 'cable-tray', density: 0.09, color: 0x2a3840, accent: 0x12181c, cluster: [2, 5] },
     { type: 'cable-tray', density: 0.03, color: 0x3a4850, accent: 0x1a2228, cluster: [1, 2] },
-    { type: 'service-crate', density: 0.028, color: 0x4a5860, accent: 0x243038, cluster: [1, 3] },
+    { type: 'server-rack', density: 0.028, color: 0x4a5860, accent: 0x243038, cluster: [1, 3] },
     { type: 'square-column', density: 0.042, color: 0x3a4850, accent: 0x1e2a30, cluster: [1, 2] },
     { type: 'ceiling-vent', density: 0.04, color: 0x36444c, accent: 0x141c20, cluster: [1, 3] },
   ],
