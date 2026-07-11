@@ -1,5 +1,6 @@
 /**
- * Procedural, articulated horror humanoid for Three.js r178+.
+ * Production skinned horror humanoid with an invisible articulated gameplay
+ * proxy for Three.js r178+.
  *
  * The module deliberately receives THREE as an argument so it does not create a
  * second Three.js dependency when consumed from a CDN or another bundle.
@@ -7,6 +8,26 @@
 
 const TAU = Math.PI * 2;
 const BASE_HEIGHT = 2.48;
+const MODEL_FADE_SECONDS = 0.16;
+const MODEL_CLIP_NAMES = Object.freeze({
+  idle: 'Idle',
+  glimpse: 'Glimpse',
+  stalk: 'Stalk',
+  search: 'Search',
+  chase: 'Chase',
+  attack: 'Attack',
+});
+const MODEL_MODE_MAP = Object.freeze({
+  hidden: 'idle',
+  idle: 'idle',
+  glimpse: 'glimpse',
+  stalk: 'stalk',
+  walk: 'stalk',
+  search: 'search',
+  chase: 'chase',
+  run: 'chase',
+  attack: 'attack',
+});
 
 const IDENTITY_PROFILES = Object.freeze({
   default: {
@@ -221,8 +242,203 @@ function deterministicSpike(time, seed, period) {
   return weight * weight * (3 - weight * 2);
 }
 
+function disposeObjectResources(root) {
+  if (!root?.traverse) return;
+  const geometries = new Set();
+  const materials = new Set();
+  const textures = new Set();
+  const skeletons = new Set();
+  root.traverse((node) => {
+    if (!node?.isMesh) return;
+    if (node.geometry?.dispose) geometries.add(node.geometry);
+    if (node.isSkinnedMesh && node.skeleton?.dispose) skeletons.add(node.skeleton);
+    const nodeMaterials = Array.isArray(node.material) ? node.material : [node.material];
+    nodeMaterials.forEach((item) => {
+      if (!item?.dispose) return;
+      materials.add(item);
+      Object.values(item).forEach((value) => {
+        if (value?.isTexture && typeof value.dispose === 'function') textures.add(value);
+      });
+    });
+  });
+  textures.forEach((item) => item.dispose());
+  materials.forEach((item) => item.dispose());
+  geometries.forEach((item) => item.dispose());
+  skeletons.forEach((item) => item.dispose());
+}
+
+function findRequiredModelClips(THREE, animations) {
+  const available = new Map(
+    (Array.isArray(animations) ? animations : [])
+      .filter((clip) => clip && typeof clip.name === 'string')
+      .map((clip) => [clip.name.toLowerCase(), clip]),
+  );
+  return Object.fromEntries(Object.entries(MODEL_CLIP_NAMES).map(([mode, name]) => {
+    const clip = available.get(name.toLowerCase());
+    if (!clip || !(clip instanceof THREE.AnimationClip)) {
+      throw new Error(`Pale entity model is missing the required ${name} animation clip.`);
+    }
+    return [mode, clip];
+  }));
+}
+
+function modelTimeScale(mode, speed) {
+  if (mode === 'stalk') return clamp(speed / 0.95, 0.52, 1.75);
+  if (mode === 'search') return clamp(speed / 1.1, 0.52, 1.75);
+  if (mode === 'chase') return clamp(speed / 3.15, 0.62, 1.7);
+  if (mode === 'glimpse') return 0.82;
+  if (mode === 'attack') return 1.08;
+  return 1;
+}
+
+function createLoadedModelController(THREE, gltf, options, proceduralRoot) {
+  const importedScene = gltf?.scene;
+  if (!importedScene?.isObject3D) {
+    throw new TypeError('Pale entity GLB must contain a Three.js scene.');
+  }
+  const armature = importedScene.getObjectByName('PaleEntity_Armature');
+  const modelNode = importedScene.getObjectByName('PaleEntity_Mesh');
+  const skeletonRoot = importedScene.getObjectByName('ROOT');
+  if (!armature?.isObject3D || !modelNode?.isObject3D || !skeletonRoot?.isBone) {
+    throw new Error(
+      'Pale entity GLB must contain PaleEntity_Armature, PaleEntity_Mesh, and ROOT nodes.',
+    );
+  }
+
+  importedScene.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(importedScene);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  if (
+    bounds.isEmpty()
+    || !Number.isFinite(size.y)
+    || size.y <= 0.001
+    || !Number.isFinite(center.x)
+    || !Number.isFinite(center.z)
+  ) {
+    throw new Error('Pale entity GLB has invalid model bounds.');
+  }
+
+  const wrapper = new THREE.Group();
+  wrapper.name = 'pale_entity_visual_root';
+  const normalizationRoot = new THREE.Group();
+  normalizationRoot.name = 'pale_entity_normalization';
+  const normalizationScale = BASE_HEIGHT / size.y;
+  normalizationRoot.scale.setScalar(normalizationScale);
+  normalizationRoot.position.set(
+    -center.x * normalizationScale,
+    -bounds.min.y * normalizationScale,
+    -center.z * normalizationScale,
+  );
+  normalizationRoot.add(importedScene);
+  wrapper.add(normalizationRoot);
+
+  importedScene.traverse((node) => {
+    if (!node?.isMesh) return;
+    node.castShadow = Boolean(options.castShadow);
+    node.receiveShadow = Boolean(options.receiveShadow);
+  });
+
+  const clips = findRequiredModelClips(THREE, gltf.animations);
+  const mixer = new THREE.AnimationMixer(importedScene);
+  const actions = Object.fromEntries(Object.entries(clips).map(([mode, clip]) => {
+    const action = mixer.clipAction(clip);
+    if (mode === 'attack') {
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+    } else {
+      action.setLoop(THREE.LoopRepeat, Infinity);
+    }
+    return [mode, action];
+  }));
+
+  let currentMode = null;
+  let currentAction = null;
+  let lastTime = null;
+  let disposed = false;
+
+  const controller = {
+    wrapper,
+    normalizationRoot,
+    importedScene,
+    armature,
+    modelNode,
+    skeletonRoot,
+    mixer,
+    actions,
+    clips,
+    get activeMode() {
+      return currentMode;
+    },
+    animate(state = {}) {
+      if (disposed) return;
+      const requestedMode = typeof state.mode === 'string' ? state.mode.toLowerCase() : 'idle';
+      const mode = MODEL_MODE_MAP[requestedMode] || 'idle';
+      const action = actions[mode];
+      const time = Number.isFinite(state.time) ? Math.max(0, state.time) : 0;
+      const speed = Number.isFinite(state.speed) ? Math.abs(state.speed) : 0;
+      const timeScale = modelTimeScale(mode, speed);
+
+      if (action !== currentAction) {
+        currentAction?.fadeOut(MODEL_FADE_SECONDS);
+        action.reset();
+        action.enabled = true;
+        action.setEffectiveWeight(1);
+        action.setEffectiveTimeScale(timeScale);
+        if (mode !== 'attack' && action.getClip().duration > 0) {
+          action.time = (time * timeScale) % action.getClip().duration;
+        }
+        action.fadeIn(MODEL_FADE_SECONDS).play();
+        currentAction = action;
+        currentMode = mode;
+      } else {
+        action.setEffectiveTimeScale(timeScale);
+      }
+
+      const delta = Number.isFinite(lastTime) && time >= lastTime && time - lastTime <= 0.5
+        ? time - lastTime
+        : 0;
+      mixer.update(delta);
+      lastTime = time;
+
+      // Animation tracks belong below this root. Keeping this transform exact
+      // guarantees that gameplay continues to own world position and yaw.
+      wrapper.position.set(0, 0, 0);
+      wrapper.rotation.set(0, 0, 0);
+      wrapper.scale.set(1, 1, 1);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      mixer.stopAllAction();
+      Object.values(actions).forEach((action) => mixer.uncacheAction(action.getClip(), importedScene));
+      mixer.uncacheRoot(importedScene);
+      if (wrapper.parent) wrapper.parent.remove(wrapper);
+      disposeObjectResources(importedScene);
+    },
+  };
+
+  proceduralRoot.visible = false;
+  wrapper.visible = true;
+  return controller;
+}
+
+async function loadMonsterModel(THREE, options) {
+  if (typeof options.modelLoader === 'function') {
+    return options.modelLoader(options.modelUrl, { THREE });
+  }
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    throw new Error('Pale entity GLB loading is only available in a browser.');
+  }
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const loader = new GLTFLoader();
+  return loader.loadAsync(options.modelUrl);
+}
+
 /**
- * Builds a self-contained procedural monster.
+ * Builds a self-contained monster actor. When modelUrl is supplied, the
+ * procedural rig remains an invisible gameplay proxy and never becomes the
+ * rendered character.
  *
  * Supported config values:
  * - height: world-space standing height (default 2.48)
@@ -235,6 +451,8 @@ function deterministicSpike(time, seed, period) {
  * - seed: deterministic small anatomical asymmetries
  * - identity: "still", "foreman", or "wader" (also inferred from name)
  * - anatomy / motion / presentation / sound: per-identity hook overrides
+ * - modelUrl: optional production Blender GLB used for every identity
+ * - modelLoader: optional async loader injection used by lifecycle tests
  */
 export function buildMonster(THREE, config = {}) {
   if (!THREE || typeof THREE.Group !== 'function' || typeof THREE.Mesh !== 'function') {
@@ -254,6 +472,8 @@ export function buildMonster(THREE, config = {}) {
     receiveShadow: false,
     seed: 0x51f15e,
     identity: '',
+    modelUrl: '',
+    modelLoader: null,
     ...config,
   };
 
@@ -1297,7 +1517,83 @@ export function buildMonster(THREE, config = {}) {
     profile: identityProfile.motion,
     baseEyeIntensity,
   };
+  let disposed = false;
+  let modelController = null;
+  const modelUrl = typeof options.modelUrl === 'string' ? options.modelUrl.trim() : '';
+  const hasProductionModel = Boolean(modelUrl);
+  const customModelLoader = typeof options.modelLoader === 'function';
+  const browserModelLoader = typeof window !== 'undefined' && typeof document !== 'undefined';
+  const shouldLoadModel = hasProductionModel && (customModelLoader || browserModelLoader);
+  // Primitive geometry is retained solely as an articulated gameplay proxy.
+  // A configured production model owns all visible presentation, including
+  // loading and error states.
+  rigRoot.visible = !hasProductionModel;
+  const modelState = {
+    status: shouldLoadModel ? 'loading' : hasProductionModel ? 'unavailable' : 'procedural',
+    url: modelUrl,
+    error: null,
+    controller: null,
+    get activeMode() {
+      return modelController?.activeMode || null;
+    },
+    fail(error) {
+      if (disposed || modelState.status !== 'ready') return;
+      modelController?.dispose();
+      modelController = null;
+      modelState.controller = null;
+      modelState.status = 'error';
+      modelState.error = error instanceof Error ? error : new Error(String(error));
+      rigRoot.visible = false;
+    },
+  };
+  monster.userData.model = modelState;
+
+  monster.userData.modelReady = shouldLoadModel
+    ? loadMonsterModel(THREE, options).then((gltf) => {
+      if (disposed) {
+        disposeObjectResources(gltf?.scene);
+        return false;
+      }
+      let controller;
+      try {
+        controller = createLoadedModelController(THREE, gltf, options, rigRoot);
+        if (disposed) {
+          controller.dispose();
+          return false;
+        }
+        monster.add(controller.wrapper);
+        modelController = controller;
+        modelState.controller = controller;
+        modelState.status = 'ready';
+        modelState.error = null;
+        return true;
+      } catch (error) {
+        controller?.dispose();
+        if (!controller) disposeObjectResources(gltf?.scene);
+        if (!disposed) {
+          modelState.status = 'error';
+          modelState.error = error instanceof Error ? error : new Error(String(error));
+          rigRoot.visible = false;
+        }
+        return false;
+      }
+    }).catch((error) => {
+      if (!disposed) {
+        modelState.status = 'error';
+        modelState.error = error instanceof Error ? error : new Error(String(error));
+        rigRoot.visible = false;
+      }
+      return false;
+    })
+    : Promise.resolve(false);
+
   monster.userData.dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    modelState.status = 'disposed';
+    modelController?.dispose();
+    modelController = null;
+    modelState.controller = null;
     geometries.forEach((item) => item.dispose());
     materials.forEach((item) => item.dispose());
     options.skinMap?.dispose?.();
@@ -1324,6 +1620,14 @@ function setRotation(node, rest, x = 0, y = 0, z = 0) {
 export function animateMonster(monster, state = {}) {
   const rig = monster && monster.userData && monster.userData.rig;
   if (!rig || !rig.rest) return monster;
+  const modelState = monster.userData.model;
+  if (modelState?.status === 'ready' && modelState.controller) {
+    try {
+      modelState.controller.animate(state);
+    } catch (error) {
+      modelState.fail(error);
+    }
+  }
 
   const time = Number.isFinite(state.time) ? state.time : 0;
   const speed = Number.isFinite(state.speed) ? Math.abs(state.speed) : 0;

@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "engine_version": "5.7.4-51494982+++UE5+Release-5.7",
+  "source_directory": "/Users/ziwenxu/Desktop/Code/Backroom/art/characters/exports",
+  "inputs": {
+    "mesh": {
+      "filename": "pale-entity-skeletal.fbx",
+      "bytes": 8622172,
+      "sha256": "a1a3655d0002a87da87ce426aea050ed002cd7434102e9f7735e694390677a4a"
+    },
+    "Walk": {
+      "filename": "pale-entity-walk.fbx",
+      "bytes": 209564,
+      "sha256": "5cc51d2033c59f789c55bc349c50f402485936221925fb0269777f0db7ff61df"
+    },
+    "Run": {
+      "filename": "pale-entity-run.fbx",
+      "bytes": 184812,
+      "sha256": "54323771e165261460ad8be24d3cfc52fb0c5ef3ef95ae106f6e42c657901a33"
+    },
+    "Crouch": {
+      "filename": "pale-entity-crouch.fbx",
+      "bytes": 215932,
+      "sha256": "ce26b1f7e7024bd23b49d7f04910a35f4165850fc10850576e533f044c81bbcc"
+    },
+    "ArmBend": {
+      "filename": "pale-entity-arm-bend.fbx",
+      "bytes": 225772,
+      "sha256": "3dea47eecd30618df9b9eadb0964e237b1e71a578f2a7f5a6f3441bb06d987c8"
+    }
+  },
+  "skeletal_mesh": "/Game/MonsterQA/Character/SK_PaleEntity.SK_PaleEntity",
+  "skeleton": "/Game/MonsterQA/Character/SKEL_PaleEntity.SKEL_PaleEntity",
+  "bone_count": 25,
+  "animations": {
+    "Walk": {
+      "asset": "/Game/MonsterQA/Animations/AN_PaleEntity_Walk.AN_PaleEntity_Walk",
+      "duration_seconds": 1.0,
+      "bone_track_count": 25,
+      "bone_tracks": [
+        "paleentity_armature",
+        "root",
+        "hips",
+        "spine_01",
+        "spine_02",
+        "chest",
+        "neck",
+        "head",
+        "jaw",
+        "clavicle_l",
+        "upper_arm_l",
+        "forearm_l",
+        "hand_l",
+        "clavicle_r",
+        "upper_arm_r",
+        "forearm_r",
+        "hand_r",
+        "thigh_l",
+        "shin_l",
+        "foot_l",
+        "toe_l",
+        "thigh_r",
+        "shin_r",
+        "foot_r",
+        "toe_r"
+      ]
+    },
+    "Run": {
+      "asset": "/Game/MonsterQA/Animations/AN_PaleEntity_Run.AN_PaleEntity_Run",
+      "duration_seconds": 0.5,
+      "bone_track_count": 25,
+      "bone_tracks": [
+        "paleentity_armature",
+        "root",
+        "hips",
+        "spine_01",
+        "spine_02",
+        "chest",
+        "neck",
+        "head",
+        "jaw",
+        "clavicle_l",
+        "upper_arm_l",
+        "forearm_l",
+        "hand_l",
+        "clavicle_r",
+        "upper_arm_r",
+        "forearm_r",
+        "hand_r",
+        "thigh_l",
+        "shin_l",
+        "foot_l",
+        "toe_l",
+        "thigh_r",
+        "shin_r",
+        "foot_r",
+        "toe_r"
+      ]
+    },
+    "Crouch": {
+      "asset": "/Game/MonsterQA/Animations/AN_PaleEntity_Crouch.AN_PaleEntity_Crouch",
+      "duration_seconds": 1.458333,
+      "bone_track_count": 25,
+      "bone_tracks": [
+        "paleentity_armature",
+        "root",
+        "hips",
+        "spine_01",
+        "spine_02",
+        "chest",
+        "neck",
+        "head",
+        "jaw",
+        "clavicle_l",
+        "upper_arm_l",
+        "forearm_l",
+        "hand_l",
+        "clavicle_r",
+        "upper_arm_r",
+        "forearm_r",
+        "hand_r",
+        "thigh_l",
+        "shin_l",
+        "foot_l",
+        "toe_l",
+        "thigh_r",
+        "shin_r",
+        "foot_r",
+        "toe_r"
+      ]
+    },
+    "ArmBend": {
+      "asset": "/Game/MonsterQA/Animations/AN_PaleEntity_ArmBend.AN_PaleEntity_ArmBend",
+      "duration_seconds": 1.291667,
+      "bone_track_count": 25,
+      "bone_tracks": [
+        "paleentity_armature",
+        "root",
+        "hips",
+        "spine_01",
+        "spine_02",
+        "chest",
+        "neck",
+        "head",
+        "jaw",
+        "clavicle_l",
+        "upper_arm_l",
+        "forearm_l",
+        "hand_l",
+        "clavicle_r",
+        "upper_arm_r",
+        "forearm_r",
+        "hand_r",
+        "thigh_l",
+        "shin_l",
+        "foot_l",
+        "toe_l",
+        "thigh_r",
+        "shin_r",
+        "foot_r",
+        "toe_r"
+      ]
+    }
+  },
+  "map": "/Game/MonsterQA/Maps/L_MonsterQA.L_MonsterQA",
+  "cameras": [
+    "CAM_QA_Front",
+    "CAM_QA_Side",
+    "CAM_QA_ThreeQuarter",
+    "CAM_QA_Walk",
+    "CAM_QA_Run",
+    "CAM_QA_Crouch",
+    "CAM_QA_ArmBend"
+  ],
+  "sequences": {
+    "Front": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_Front.LS_QA_Front",
+      "camera": "CAM_QA_Front",
+      "animation": null,
+      "frames": 1
+    },
+    "Side": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_Side.LS_QA_Side",
+      "camera": "CAM_QA_Side",
+      "animation": null,
+      "frames": 1
+    },
+    "ThreeQuarter": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_ThreeQuarter.LS_QA_ThreeQuarter",
+      "camera": "CAM_QA_ThreeQuarter",
+      "animation": null,
+      "frames": 1
+    },
+    "Walk": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_Walk.LS_QA_Walk",
+      "camera": "CAM_QA_Walk",
+      "animation": "/Game/MonsterQA/Animations/AN_PaleEntity_Walk.AN_PaleEntity_Walk",
+      "frames": 30
+    },
+    "Run": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_Run.LS_QA_Run",
+      "camera": "CAM_QA_Run",
+      "animation": "/Game/MonsterQA/Animations/AN_PaleEntity_Run.AN_PaleEntity_Run",
+      "frames": 15
+    },
+    "Crouch": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_Crouch.LS_QA_Crouch",
+      "camera": "CAM_QA_Crouch",
+      "animation": "/Game/MonsterQA/Animations/AN_PaleEntity_Crouch.AN_PaleEntity_Crouch",
+      "frames": 44
+    },
+    "ArmBend": {
+      "asset": "/Game/MonsterQA/Sequences/LS_QA_ArmBend.LS_QA_ArmBend",
+      "camera": "CAM_QA_ArmBend",
+      "animation": "/Game/MonsterQA/Animations/AN_PaleEntity_ArmBend.AN_PaleEntity_ArmBend",
+      "frames": 39
+    }
+  }
+}

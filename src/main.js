@@ -2102,10 +2102,17 @@ async function init() {
     eyeGlow: Boolean(level.monster.skin.eye),
     eyeIntensity: level.monster.skin.emissiveIntensity,
     detail: mobile ? 'medium' : 'high',
+    castShadow: !mobile,
+    receiveShadow: false,
     skinMap: creatureSkinMap,
+    modelUrl: `${import.meta.env.BASE_URL}models/monsters/pale-entity.glb`,
     seed: seed ^ 0x51f15e,
   });
   entity.visible = false;
+  dom.game.dataset.monsterModel = entity.userData.model?.status || 'procedural';
+  void entity.userData.modelReady?.then(() => {
+    dom.game.dataset.monsterModel = entity.userData.model?.status || 'procedural';
+  });
   scene.add(entity);
 
   const remotePlayers = createRemotePlayerManager(THREE, scene, {
@@ -5637,6 +5644,8 @@ async function init() {
   });
   window.addEventListener('pagehide', () => {
     persistFlashlightCharge();
+    entity.userData.dispose?.();
+    remotePlayers.dispose();
     waitingRoomPreview.dispose();
     voiceChat.destroy();
   }, { once: true });

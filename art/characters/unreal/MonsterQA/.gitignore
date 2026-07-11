@@ -1,0 +1,10 @@
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+*.sln
+*.xcworkspace/

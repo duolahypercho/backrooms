@@ -1,0 +1,70 @@
+{
+  "colorSpace": {
+    "baseColor": "sRGB",
+    "normal": "Non-Color / linear",
+    "occlusion": "Non-Color / linear",
+    "orm": "Non-Color / linear",
+    "roughness": "Non-Color / linear"
+  },
+  "files": {
+    "baseColor": {
+      "file": "pale-skin-basecolor.png",
+      "sha256": "8de234d3b7a67d2bbcc5afdbcef61dad312e219b5dc5ffa4b9dc730f0c49a92a"
+    },
+    "contactSheet": {
+      "file": "pale-skin-contact-sheet.png",
+      "sha256": "024e4545faac61243057f7acda7fc455a728eca3e32be32090ecf2fbebd8dca9"
+    },
+    "normal": {
+      "file": "pale-skin-normal.png",
+      "sha256": "44b94bd3b8a72c34b0084a0e791d6de1bf9f0f01218f81c8cf742fc865aa5e96"
+    },
+    "occlusion": {
+      "file": "pale-skin-ao.png",
+      "sha256": "7faca690a91fd67d84531d036de6d44660aeb2cc7313f0124a7e4468ad5d69c3"
+    },
+    "orm": {
+      "file": "pale-skin-orm.png",
+      "sha256": "7bec6e9e100c0d178fcf57b8d1418f5fa0ff2add47dd89083579d5223c659c1a"
+    },
+    "roughness": {
+      "file": "pale-skin-roughness.png",
+      "sha256": "eddcbc2d89ec148e5087493bacf2094446b4d2b85694feac40248db7d6ff7e2d"
+    }
+  },
+  "generator": "scripts/blender/hd_pbr_tools.py",
+  "glTFWiring": {
+    "baseColorTexture": "baseColor",
+    "metallicRoughnessTexture": "orm (roughness G, metallic B)",
+    "normalTexture": "normal",
+    "occlusionTexture": "orm.R"
+  },
+  "material": "pale-skin",
+  "normalConvention": "OpenGL tangent space (+Y / green-up)",
+  "ormChannels": {
+    "B": "metallic (zero)",
+    "G": "roughness",
+    "R": "occlusion"
+  },
+  "resolution": [
+    2048,
+    2048
+  ],
+  "schemaVersion": 1,
+  "seed": 1346456645,
+  "validation": {
+    "aoMean": 0.994742,
+    "dynamicRanges": {
+      "albedo": 67,
+      "ao": 45,
+      "normal": 192,
+      "roughness": 92
+    },
+    "material": "pale-skin",
+    "normalMeanLength": 1.000088,
+    "normalMinZ": 0.835294,
+    "resolution": 2048,
+    "roughnessMean": 0.707397,
+    "seed": 1346456645
+  }
+}
